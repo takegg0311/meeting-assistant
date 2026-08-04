@@ -64,7 +64,7 @@ meeting-assistant/
 
 ### 前提
 
-- Python 3.11+
+- Python 3.11+ / [uv](https://docs.astral.sh/uv/)(バックエンドの依存管理・仮想環境に使用)
 - Node.js 20+
 - PostgreSQL 15+(Phase 6以降で使用。Phase 1時点では未使用)
 - Claude API キー(ファクトチェック・回答提案・議事録生成用、Phase 2以降)
@@ -82,14 +82,15 @@ cp .env.sample .env
 
 ### バックエンド(FastAPI)
 
-`backend/` に実装後、以下を想定:
+依存管理・仮想環境には [uv](https://docs.astral.sh/uv/) を使用する。
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uv sync --extra dev
+uv run uvicorn app.main:app --reload --port 8000
 ```
+
+`uv sync` が `.venv` を作成し、`pyproject.toml` / `uv.lock` に基づいて依存を解決・インストールする。
 
 ### フロントエンド(React)
 
@@ -130,7 +131,7 @@ npm run dev
 
    ```bash
    cd backend
-   python scripts/download_whisper_cpp_model.py base
+   uv run python scripts/download_whisper_cpp_model.py base
    ```
 
 4. `WHISPER_CPP_MODEL_DIR`(未設定時は`./models/whisper_cpp`)にモデルが配置されていることを確認する。
