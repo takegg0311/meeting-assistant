@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 AudioSource = Literal["microphone", "tab_audio", "system_audio"]
-SttProviderName = Literal["cloud", "local", "mock"]
+SttProviderName = Literal["cloud_openai", "cloud_google", "local_whispercpp", "mock"]
 
 
 class StartSessionMessage(BaseModel):

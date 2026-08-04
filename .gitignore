@@ -16,6 +16,9 @@ build/
 .next/
 *.egg-info/
 
+# STTモデルファイル
+backend/models/
+
 # Logs
 logs/
 *.log

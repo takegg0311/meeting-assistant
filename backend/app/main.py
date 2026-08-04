@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketState
 
 from app.config import settings
-from app.schemas import StartSessionMessage, StopSessionMessage
+from app.schemas import StartSessionMessage, StatusEvent, StopSessionMessage
 from app.session import MeetingSession
 
 logging.basicConfig(level=settings.log_level.upper())
@@ -46,11 +46,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
                 if msg_type == "start_session":
                     start_msg = StartSessionMessage.model_validate(payload)
-                    session = MeetingSession(
-                        websocket=websocket,
-                        stt_provider_name=start_msg.stt_provider,
-                        audio_source=start_msg.audio_source,
-                    )
+                    try:
+                        session = MeetingSession(
+                            websocket=websocket,
+                            stt_provider_name=start_msg.stt_provider,
+                            audio_source=start_msg.audio_source,
+                        )
+                    except Exception as exc:
+                        logger.exception("Failed to start STT provider: %s", start_msg.stt_provider)
+                        await websocket.send_json(
+                            StatusEvent(stage="error", message=str(exc)).model_dump()
+                        )
+                        continue
                     await session.start()
                 elif msg_type == "stop_session":
                     StopSessionMessage.model_validate(payload)

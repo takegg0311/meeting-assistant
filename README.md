@@ -4,8 +4,8 @@
 
 設計の詳細は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) を参照。
 
-> **現状: 設計フェーズ完了、実装未着手**
-> `backend/` `frontend/` は現時点で空ディレクトリです。以下は `docs/ARCHITECTURE.md` に基づく実装予定の構成です。
+> **現状: Phase 1(MVP)実装中**
+> 音声入力・WebSocketストリーミング・ライブ文字起こし表示、およびSTTプロバイダ(クラウド: OpenAI Realtime / Google Cloud、ローカル: whisper.cpp Vulkan)を実装済み。Phase 2以降(質問検出・ファクトチェック等)は未着手。
 
 ## 1. 全体像
 
@@ -40,8 +40,8 @@ Client (Browser) [音声入力: マイク / PC音声(タブ・システム)を�
 |---|---|
 | フロントエンド | TypeScript + React、WebSocketクライアント、Web Audio API / AudioWorklet、Screen Capture API |
 | バックエンド | FastAPI + WebSocket(asyncio)、Pydantic |
-| STT(クラウド) | Google Cloud Speech-to-Text streaming / Azure Speech / OpenAI Realtime API |
-| STT(ローカル) | faster-whisper / whisper-streaming |
+| STT(クラウド) | OpenAI Realtime API(`gpt-4o-transcribe`) / Google Cloud Speech-to-Text(StreamingRecognize) |
+| STT(ローカル) | whisper.cpp(Vulkanビルド、`whisper-cli`をsubprocess実行 + サーバー側VADで発話区切り検出) |
 | LLM(クラウド) | Claude API(ファクトチェック・回答提案・議事録生成) |
 | LLM(ローカル) | Qwen系モデル(Ollama/vLLM) |
 | 話者分離 | pyannote-audio |
@@ -66,9 +66,9 @@ meeting-assistant/
 
 - Python 3.11+
 - Node.js 20+
-- PostgreSQL 15+
-- Claude API キー(ファクトチェック・回答提案・議事録生成用)
-- クラウドSTTを使う場合は対応するAPIキー(Google Cloud Speech-to-Text / Azure Speech / OpenAI Realtime API 等)
+- PostgreSQL 15+(Phase 6以降で使用。Phase 1時点では未使用)
+- Claude API キー(ファクトチェック・回答提案・議事録生成用、Phase 2以降)
+- 使用するSTTプロバイダに応じた準備(下記「STTプロバイダの設定」参照)
 
 ### 環境変数
 
@@ -103,6 +103,40 @@ npm run dev
 
 デフォルトでフロントエンドは `http://localhost:3000`、バックエンドは `http://localhost:8000`(WebSocket: `ws://localhost:8000/ws`)で起動する想定。
 
+### STTプロバイダの設定
+
+セッション開始時(`start_session`メッセージの`stt_provider`)に選択する。`mock`はAPIキー等の設定不要で常に利用可能(開発・動作確認用のダミー文字起こし)。
+
+| `stt_provider` | 説明 | 必要な設定 |
+|---|---|---|
+| `mock` | ダミーの文字起こしを返す(開発用) | なし |
+| `cloud_openai` | OpenAI Realtime API(`gpt-4o-transcribe`)によるストリーミング認識 | `OPENAI_API_KEY` |
+| `cloud_google` | Google Cloud Speech-to-TextのStreamingRecognize | `GOOGLE_APPLICATION_CREDENTIALS`(サービスアカウント鍵JSONのパス) |
+| `local_whispercpp` | whisper.cpp(Vulkanビルド等)の`whisper-cli`をVAD区切りごとにsubprocess実行 | `WHISPER_CPP_BINARY`、GGMLモデル |
+
+#### whisper.cpp(ローカル)のセットアップ
+
+1. ホスト上でVulkanビルド済みの`whisper-cli`を用意する(Docker・Pythonバインディングは使わない)。
+
+   ```bash
+   git clone https://github.com/ggml-org/whisper.cpp
+   cd whisper.cpp
+   cmake -B build -DGGML_VULKAN=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF
+   cmake --build build --config Release
+   ```
+
+2. `.env`の`WHISPER_CPP_BINARY`にバイナリパスを設定する。
+3. GGMLモデルを取得する(リポジトリには含めない)。
+
+   ```bash
+   cd backend
+   python scripts/download_whisper_cpp_model.py base
+   ```
+
+4. `WHISPER_CPP_MODEL_DIR`(未設定時は`./models/whisper_cpp`)にモデルが配置されていることを確認する。
+
+AMD Vulkan環境では`WHISPER_CPP_FLASH_ATTN=false`(既定)・`WHISPER_CPP_BEAM_SIZE=5`を推奨する(flash attention有効時や大きなbeam_sizeでは不安定になる報告がある)。
+
 ## 5. 実装ロードマップ
 
 1. **Phase 1(MVP)**: 音声入力ソース切替(マイク/PC音声)・WebSocketストリーミング・STT抽象化・ライブ文字起こし表示
@@ -120,3 +154,4 @@ npm run dev
 - ファクトチェック・回答提案・想定質問生成はLLM呼び出しを伴うため、コスト管理(頻度制御・ON/OFF切替)に留意する。
 - PC音声(タブ/システム)取得はChrome/Edgeでのみ安定動作し、Firefox/Safariは非対応(マイクのみへフォールバック)。
 - 音声・transcriptの保存範囲はプライバシー要件に応じて設定する。
+- `local_whispercpp`はVADによる発話区切りごとにサブプロセスを起動するため、クラウド勢(OpenAI Realtime / Google StreamingRecognize)と比べて確定テキストが返るまでの遅延が大きい。社外秘の会議などプライバシー要件がある場合の選択肢として位置づける。

@@ -4,8 +4,9 @@ import { AudioCapturePipeline } from "./audio/AudioCapturePipeline";
 import type { AudioSourceProvider } from "./audio/AudioSourceProvider";
 import { DisplayAudioSource, MicrophoneSource } from "./audio/AudioSourceProvider";
 import { AudioSourceSelector } from "./components/AudioSourceSelector";
+import { SttProviderSelector } from "./components/SttProviderSelector";
 import { TranscriptPanel } from "./components/TranscriptPanel";
-import type { AudioSource, TranscriptEvent } from "./types/messages";
+import type { AudioSource, SttProviderName, TranscriptEvent } from "./types/messages";
 import { MeetingSocket } from "./ws/MeetingSocket";
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8000/ws";
@@ -14,6 +15,7 @@ type SessionState = "idle" | "starting" | "active" | "stopping";
 
 function App() {
   const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
+  const [sttProvider, setSttProvider] = useState<SttProviderName>("mock");
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [segments, setSegments] = useState<TranscriptEvent[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -33,7 +35,15 @@ function App() {
 
       socket.onEvent((event) => {
         if (event.type === "transcript") {
-          setSegments((prev) => [...prev, event]);
+          setSegments((prev) => {
+            const existingIndex = prev.findIndex((s) => s.segment_id === event.segment_id);
+            if (existingIndex === -1) {
+              return [...prev, event];
+            }
+            const next = [...prev];
+            next[existingIndex] = event;
+            return next;
+          });
         } else if (event.type === "status" && event.stage === "error") {
           setErrorMessage(event.message);
         }
@@ -48,7 +58,7 @@ function App() {
       await pipeline.start(provider);
 
       socket.startSession({
-        stt_provider: "mock",
+        stt_provider: sttProvider,
         audio_source: provider.sourceType,
         features: [],
       });
@@ -86,6 +96,7 @@ function App() {
 
       <section className="controls">
         <AudioSourceSelector value={audioSource} disabled={isSessionActive} onChange={setAudioSource} />
+        <SttProviderSelector value={sttProvider} disabled={isSessionActive} onChange={setSttProvider} />
         {sessionState === "idle" ? (
           <button onClick={handleStart}>セッション開始</button>
         ) : (
