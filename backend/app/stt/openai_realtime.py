@@ -66,7 +66,10 @@ class OpenAiRealtimeSttProvider:
                     "input": {
                         "format": {"type": "audio/pcm", "rate": _OPENAI_INPUT_SAMPLE_RATE},
                         "transcription": {"model": settings.openai_realtime_model},
-                        "turn_detection": {"type": "server_vad"},
+                        # 無音のみで区切るserver_vadは会議音声(複数話者・雑音)で発話途中に
+                        # 区切ってしまい欠落や誤変換を招きやすいため、意味的な完結を待つ
+                        # semantic_vadを使う(会議のような自然な発話に対して頑健)。
+                        "turn_detection": {"type": "semantic_vad", "eagerness": "low"},
                     }
                 },
             },
