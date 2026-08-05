@@ -65,6 +65,30 @@ export class MeetingSocket {
     this._sendControl<StopSessionMessage>({ type: "stop_session" });
   }
 
+  /** stop_session送信後、サーバーのsession_stopped応答を待ってからclose()する。
+   * 応答を待たずに閉じるとサーバー側の送信が失敗しエラーログが出るため。 */
+  waitForStop(timeoutMs = 2000): Promise<void> {
+    return new Promise((resolve) => {
+      if (!this._isOpen()) {
+        resolve();
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        unsubscribe();
+        resolve();
+      }, timeoutMs);
+
+      const unsubscribe = this.onEvent((event) => {
+        if (event.type === "status" && event.stage === "session_stopped") {
+          clearTimeout(timer);
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+  }
+
   sendAudioChunk(chunk: ArrayBuffer): void {
     const item = this.sendBuffer.enqueue(chunk);
     if (this._isOpen()) {

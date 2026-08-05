@@ -75,9 +75,11 @@ function App() {
 
   const handleStop = async () => {
     setSessionState("stopping");
-    socketRef.current?.stopSession();
     pipelineRef.current?.stop();
     providerRef.current?.stop();
+
+    socketRef.current?.stopSession();
+    await socketRef.current?.waitForStop();
     socketRef.current?.close();
 
     socketRef.current = null;
