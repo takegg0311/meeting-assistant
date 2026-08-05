@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+configs/
 
 # Dependencies
 node_modules/
@@ -14,6 +15,10 @@ venv/
 dist/
 build/
 .next/
+*.egg-info/
+
+# STTモデルファイル
+backend/models/
 
 # Logs
 logs/
