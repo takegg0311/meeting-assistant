@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     answer_suggestion_context_segments: int = 8
     # 同時に走らせる生成タスクの上限(連打時の保護)。
     answer_suggestion_max_concurrency: int = 3
+    # LLM生成の打ち切り時間。超えるとカードをerror表示に落とす(generatingのまま
+    # 放置しない)。2〜3秒目標に対し、遅延時のリトライ余地を含めた上限。
+    answer_suggestion_timeout_ms: int = 15000
+    # セッション終了時に生成中の回答提案を待つ上限。クライアントは session_stopped を
+    # 数秒で待つのをやめるため、それを超えて待っても結果は届かない。
+    answer_suggestion_stop_grace_ms: int = 3000
 
     # --- OpenAI Realtime STT (cloud_openai) ---
     openai_api_key: str = ""
