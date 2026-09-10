@@ -13,9 +13,26 @@ class Settings(BaseSettings):
     # 別ホストからアクセスさせる場合のみ明示する。
     cors_origin: str = ""
     stt_provider: str = "mock"
+    llm_provider: str = "mock"
     audio_sample_rate: int = 16000
     audio_channels: int = 1
     log_level: str = "info"
+
+    # --- LLM (回答提案などの生成処理) ---
+    anthropic_api_key: str = ""
+    # 2〜3秒目標のレイテンシ要求のため、回答提案は軽量モデルを既定にする。
+    anthropic_answer_model: str = "claude-haiku-4-5-20251001"
+    anthropic_answer_max_tokens: int = 1024
+
+    # --- 回答提案 (Phase 2) ---
+    # ボタン押下時点では質問末尾がSTT未確定な可能性が高いため、押下後に確定
+    # セグメントを待つ猶予時間。待機中はUIに生成中カードを表示する。
+    answer_suggestion_grace_ms: int = 1500
+    # 質問候補として扱う直近セグメント数と、その前に文脈として渡すセグメント数。
+    answer_suggestion_question_segments: int = 2
+    answer_suggestion_context_segments: int = 8
+    # 同時に走らせる生成タスクの上限(連打時の保護)。
+    answer_suggestion_max_concurrency: int = 3
 
     # --- OpenAI Realtime STT (cloud_openai) ---
     openai_api_key: str = ""
