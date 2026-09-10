@@ -5,7 +5,7 @@
 設計の詳細は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) を参照。
 
 > **現状: Phase 1(MVP)実装中**
-> 音声入力・WebSocketストリーミング・ライブ文字起こし表示、およびSTTプロバイダ(クラウド: OpenAI Realtime / Google Cloud、ローカル: whisper.cpp Vulkan)を実装済み。Phase 2以降(質問検出・ファクトチェック等)は未着手。
+> 音声入力・WebSocketストリーミング・ライブ文字起こし表示、およびSTTプロバイダ(クラウド: OpenAI Realtime / Google Cloud、ローカル: whisper.cpp Vulkan)を実装済み。Phase 2以降(回答提案・ファクトチェック等)は未着手。
 
 ## 1. 全体像
 
@@ -18,7 +18,7 @@ Client (Browser) [音声入力: マイク / PC音声(タブ・システム)を�
                      │    └─ 確定transcriptイベントをSessionに供給
                      ├─ Analysis pipeline (非同期タスク群、それぞれ独立して発火)
                      │    ├─ Topic/Claim抽出 → ファクトチェック
-                     │    ├─ 質問検出 → 回答提案生成
+                     │    ├─ 回答提案生成 (UI操作トリガー)
                      │    ├─ 想定質問生成(アイドル時)
                      │    └─ 話者embeddingクラスタリング
                      └─ Session store (transcript全文 + 各種生成結果を永続化)
@@ -162,7 +162,7 @@ AMD Vulkan環境では`WHISPER_CPP_FLASH_ATTN=false`(既定)・`WHISPER_CPP_BEAM
 ## 5. 実装ロードマップ
 
 1. **Phase 1(MVP)**: 音声入力ソース切替(マイク/PC音声)・WebSocketストリーミング・STT抽象化・ライブ文字起こし表示
-2. **Phase 2**: 質問検出 + 回答提案
+2. **Phase 2**: 回答提案(UI操作トリガー) / **Phase 2.5**: LLMによる自動質問検出(サブ軸)
 3. **Phase 3**: ファクトチェック/情報収集パイプライン
 4. **Phase 4**: 想定質問生成
 5. **Phase 5**: 話者判別(ベストエフォート)
