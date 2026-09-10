@@ -87,10 +87,18 @@ cp .env.sample .env
 ```bash
 cd backend
 uv sync --extra dev
-uv run uvicorn app.main:app --reload --port 8000
+uv run python -m app.main
 ```
 
 `uv sync` が `.venv` を作成し、`pyproject.toml` / `uv.lock` に基づいて依存を解決・インストールする。
+
+待受ポートは `.env` の `BACKEND_PORT`(未設定時は8000)で決まる。フロントエンドの接続先も同じ `BACKEND_PORT` から解決されるため、ポートを変えるときは `.env` の1箇所を書き換えるだけでよい。
+
+`uvicorn` コマンドを直接使う場合は `--port` の指定が必須(指定しないと `BACKEND_PORT` に関係なく8000で待受する)。
+
+```bash
+uv run uvicorn app.main:app --reload --port "$BACKEND_PORT"
+```
 
 ### フロントエンド(React)
 
@@ -102,7 +110,9 @@ npm install
 npm run dev
 ```
 
-デフォルトでフロントエンドは `http://localhost:3000`、バックエンドは `http://localhost:8000`(WebSocket: `ws://localhost:8000/ws`)で起動する想定。
+デフォルトでフロントエンドは `http://localhost:3000`、バックエンドは `http://localhost:8000`(WebSocket: `ws://localhost:8000/ws`)で起動する。
+
+バックエンドのポートを変える場合は `.env` の `BACKEND_PORT` のみを変更する(例: `BACKEND_PORT=8001`)。フロントエンドのWebSocket接続先は `vite.config.ts` が `BACKEND_PORT` から解決するため追従する。`VITE_WS_URL` を明示した場合はそちらが優先される。
 
 ### STTプロバイダの設定
 
