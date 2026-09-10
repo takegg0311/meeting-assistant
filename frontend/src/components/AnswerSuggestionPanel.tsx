@@ -54,19 +54,24 @@ function AnswerCard({ suggestion }: { suggestion: AnswerSuggestionEvent }) {
 }
 
 export function AnswerSuggestionPanel({ suggestions }: Props) {
-  if (suggestions.length === 0) {
-    return null;
-  }
-
   return (
-    <section className="answer-panel">
+    <section className="panel answer-panel">
       <h2>回答提案</h2>
-      {/* 新しいものを上に積む(連打時に最新が埋もれないようにする) */}
-      <ul className="answer-list">
-        {[...suggestions].reverse().map((suggestion) => (
-          <AnswerCard key={suggestion.request_id} suggestion={suggestion} />
-        ))}
-      </ul>
+      {/* 枠の高さは親グリッドが決め、あふれた分はこの中だけでスクロールさせる。 */}
+      <div className="panel-scroll">
+        {suggestions.length === 0 ? (
+          <p className="answer-empty">
+            「回答提案」ボタンを押すと、直近の問いへの回答案がここに表示されます。
+          </p>
+        ) : (
+          /* 新しいものを上に積む(連打時に最新が埋もれないようにする) */
+          <ul className="answer-list">
+            {[...suggestions].reverse().map((suggestion) => (
+              <AnswerCard key={suggestion.request_id} suggestion={suggestion} />
+            ))}
+          </ul>
+        )}
+      </div>
     </section>
   );
 }

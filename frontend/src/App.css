@@ -1,15 +1,87 @@
+/* 画面全体を1画面に収め、あふれる分はパネル内でスクロールさせる。
+   ヘッダーと操作列は自然高、main が残りの高さを占める。 */
 .app {
-  max-width: 720px;
+  width: 100%;
+  max-width: 1600px;
+  height: 100svh;
   margin: 0 auto;
-  padding: 24px 16px;
+  padding: 16px;
+  box-sizing: border-box;
   font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* 子(main)の縮小を許し、はみ出しをパネル内スクロールに閉じ込める。 */
+  min-height: 0;
+}
+
+/* 1画面に収めるため、既定の大きな見出しを圧縮する。 */
+.app header h1 {
+  font-size: 28px;
+  letter-spacing: -0.5px;
+  margin: 0;
+}
+
+.panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+/* 横並びで各枠が読める幅(1枠おおよそ420px以上)を保てなくなったら縦積みにする。
+   縦積みでは1画面に収めず、ページ全体のスクロールを許す
+   (縦2枠を1画面に押し込むとどちらも読めない高さになるため)。 */
+@media (max-width: 900px) {
+  .app {
+    height: auto;
+    min-height: 100svh;
+  }
+
+  .panes {
+    grid-template-columns: 1fr;
+  }
+
+  .panel {
+    /* 縦積みでは各枠に読める高さを与える。 */
+    min-height: 40svh;
+  }
+}
+
+/* パネル: 見出しは固定し、中身だけがスクロールする。 */
+.panel {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 8px;
+  padding: 12px 16px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  text-align: left;
+  overflow: hidden;
+}
+
+.panel h2 {
+  font-size: 1em;
+  margin: 0 0 8px;
+  flex-shrink: 0;
+}
+
+.panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* スクロールバーが文字に重ならないよう余白を確保する。 */
+  padding-right: 4px;
 }
 
 .controls {
   display: flex;
   align-items: center;
   gap: 16px;
-  margin-bottom: 16px;
+  /* 縦の間隔は .app の gap が受け持つ。 */
+  flex-wrap: wrap;
 }
 
 .controls fieldset {
@@ -26,15 +98,17 @@
   border-radius: 6px;
 }
 
-.transcript-panel {
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 16px;
-  min-height: 200px;
+.transcript-empty,
+.answer-empty {
+  color: #888;
 }
 
-.transcript-empty {
-  color: #888;
+/* 上を読んでいて自動追従が止まっているときだけ出す復帰ボタン。 */
+.follow-latest {
+  align-self: center;
+  margin-top: 8px;
+  flex-shrink: 0;
+  font-size: 0.85em;
 }
 
 .segment-final {
@@ -56,17 +130,6 @@
 .answer-request-hint {
   color: #888;
   font-size: 0.85em;
-}
-
-.answer-panel {
-  margin-bottom: 16px;
-  /* #root 全体が中央寄せのため、読み物である回答案だけ左寄せに戻す。 */
-  text-align: left;
-}
-
-.answer-panel h2 {
-  font-size: 1em;
-  margin: 0 0 8px;
 }
 
 .answer-card-footer {

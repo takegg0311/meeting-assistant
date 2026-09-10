@@ -149,9 +149,11 @@ function App() {
 
       {errorMessage && <p className="error-banner">{errorMessage}</p>}
 
-      <main>
-        <AnswerSuggestionPanel suggestions={suggestions} />
+      {/* 広い画面では左に文字起こし、右に回答提案を横並べにし、狭い画面では縦積みにする。
+          高さは1画面に収め、あふれた分は枠ごとにスクロールさせる(App.cssを参照)。 */}
+      <main className="panes">
         <TranscriptPanel segments={segments} />
+        <AnswerSuggestionPanel suggestions={suggestions} />
       </main>
     </div>
   );
