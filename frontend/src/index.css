@@ -50,13 +50,11 @@
   }
 }
 
+/* アプリ本体(.app)が画面高に合わせて2枠を並べるため、#root は幅・高さを
+   制限せず素通しにする。中央寄せもしない(パネル内は左寄せで読む)。 */
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
+  width: 100%;
+  height: 100svh;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;

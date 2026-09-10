@@ -6,7 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketState
 
 from app.config import settings
-from app.schemas import StartSessionMessage, StatusEvent, StopSessionMessage
+from app.schemas import (
+    RequestAnswerSuggestionMessage,
+    StartSessionMessage,
+    StatusEvent,
+    StopSessionMessage,
+)
 from app.session import MeetingSession
 
 logging.basicConfig(level=settings.log_level.upper())
@@ -32,6 +37,7 @@ async def health() -> dict[str, str]:
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     session: MeetingSession | None = None
+    disconnected = False
 
     try:
         while True:
@@ -64,14 +70,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     if session is not None:
                         await session.stop()
                         session = None
+                elif msg_type == "request_answer_suggestion":
+                    request_msg = RequestAnswerSuggestionMessage.model_validate(payload)
+                    if session is None:
+                        await websocket.send_json(
+                            StatusEvent(
+                                stage="error", message="Session is not started"
+                            ).model_dump()
+                        )
+                        continue
+                    # 生成はセッション側のタスクに任せ、受信ループはブロックしない。
+                    session.request_answer_suggestion(request_msg.request_id)
             elif (data := message.get("bytes")) is not None:
                 if session is not None:
                     await session.push_audio_chunk(data)
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
+        disconnected = True
     finally:
         if session is not None:
-            await session.stop()
+            # 切断済みなら生成中の回答提案を待たずに畳む(結果を送る相手がいない)。
+            await session.stop(notify_client=not disconnected)
         if websocket.client_state != WebSocketState.DISCONNECTED:
             await websocket.close()
 

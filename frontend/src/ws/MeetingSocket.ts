@@ -1,6 +1,12 @@
-import type { ServerEvent, StartSessionMessage, StopSessionMessage } from "../types/messages";
+import type {
+  RequestAnswerSuggestionMessage,
+  ServerEvent,
+  StartSessionMessage,
+  StopSessionMessage,
+} from "../types/messages";
 
 type EventListener = (event: ServerEvent) => void;
+type CloseListener = () => void;
 
 /**
  * 音声チャンクの送信バッファ。接続が切れている間の送信要求を溜めておき、
@@ -28,6 +34,7 @@ class SendBuffer {
 export class MeetingSocket {
   private ws: WebSocket | null = null;
   private listeners: Set<EventListener> = new Set();
+  private closeListeners: Set<CloseListener> = new Set();
   private sendBuffer = new SendBuffer();
   private readonly url: string;
 
@@ -55,6 +62,8 @@ export class MeetingSocket {
       this.ws.onmessage = (event) => this._handleMessage(event);
       this.ws.onclose = () => {
         // 音声送信は継続してバッファに溜め、再接続時にresendする想定。
+        // 生成中の回答提案は結果が届かなくなるため、購読者へ通知する。
+        this.closeListeners.forEach((listener) => listener());
       };
     });
   }
@@ -64,12 +73,26 @@ export class MeetingSocket {
     return () => this.listeners.delete(listener);
   }
 
+  /** 接続が閉じたときに呼ばれる。意図的な close と予期しない切断の両方で発火する。 */
+  onClose(listener: CloseListener): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
   startSession(message: Omit<StartSessionMessage, "type">): void {
     this._sendControl({ type: "start_session", ...message });
   }
 
   stopSession(): void {
     this._sendControl<StopSessionMessage>({ type: "stop_session" });
+  }
+
+  /** 回答提案をリクエストする。結果は answer_suggestion イベントで request_id 紐付けで届く。 */
+  requestAnswerSuggestion(requestId: string): void {
+    this._sendControl<RequestAnswerSuggestionMessage>({
+      type: "request_answer_suggestion",
+      request_id: requestId,
+    });
   }
 
   /** stop_session送信後、サーバーのsession_stopped応答を待ってからclose()する。

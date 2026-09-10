@@ -4,8 +4,8 @@
 
 設計の詳細は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) を参照。
 
-> **現状: Phase 1(MVP)実装中**
-> 音声入力・WebSocketストリーミング・ライブ文字起こし表示、およびSTTプロバイダ(クラウド: OpenAI Realtime / Google Cloud、ローカル: whisper.cpp Vulkan)を実装済み。Phase 2以降(回答提案・ファクトチェック等)は未着手。
+> **現状: Phase 2 実装中**
+> 音声入力・WebSocketストリーミング・ライブ文字起こし表示、STTプロバイダ(クラウド: OpenAI Realtime / Google Cloud、ローカル: whisper.cpp Vulkan)、および回答提案(UI操作トリガー、LLMプロバイダはmock / Claude API)を実装済み。Phase 2.5以降(自動質問検出・ファクトチェック等)は未着手。
 
 ## 1. 全体像
 
@@ -67,7 +67,7 @@ meeting-assistant/
 - Python 3.11+ / [uv](https://docs.astral.sh/uv/)(バックエンドの依存管理・仮想環境に使用)
 - Node.js 20+
 - PostgreSQL 15+(Phase 6以降で使用。Phase 1時点では未使用)
-- Claude API キー(ファクトチェック・回答提案・議事録生成用、Phase 2以降)
+- Claude API キー(回答提案・ファクトチェック・議事録生成用。`LLM_PROVIDER=mock` なら不要)
 - 使用するSTTプロバイダに応じた準備(下記「STTプロバイダの設定」参照)
 
 ### 環境変数
@@ -98,6 +98,12 @@ uv run python -m app.main
 
 ```bash
 uv run uvicorn app.main:app --reload --port "$BACKEND_PORT"
+```
+
+テストは `pytest` で実行する。
+
+```bash
+cd backend && uv run pytest
 ```
 
 ### フロントエンド(React)
@@ -158,6 +164,22 @@ Vite開発サーバーは `strictPort: true` で起動するため、`FRONTEND_P
 4. `WHISPER_CPP_MODEL_DIR`(未設定時は`./models/whisper_cpp`)にモデルが配置されていることを確認する。
 
 AMD Vulkan環境では`WHISPER_CPP_FLASH_ATTN=false`(既定)・`WHISPER_CPP_BEAM_SIZE=5`を推奨する(flash attention有効時や大きなbeam_sizeでは不安定になる報告がある)。
+
+### 回答提案の設定
+
+会議中に「今の問いへの回答案が欲しい」と思ったタイミングで**画面の「回答提案」ボタンを押す**と、直近の会話から回答案が生成されて表示される。LLMによる自動質問検出は行わない(理由は [docs/ARCHITECTURE.md 4.4](docs/ARCHITECTURE.md) を参照)。
+
+| LLM_PROVIDER | 用途 | 必要な設定 |
+|---|---|---|
+| `mock` (既定) | APIキー不要のダミー実装。配線・UIの動作確認用 | なし |
+| `cloud_anthropic` | Claude APIで実際に生成 | `ANTHROPIC_API_KEY` |
+
+主な調整項目(既定値は`.env.sample`を参照):
+
+- `ANSWER_SUGGESTION_GRACE_MS`: ボタン押下後、確定セグメントの到着を待つ猶予時間。押下時点では質問の末尾がまだSTT未確定な可能性が高いため待つ。猶予内に確定すれば即座に生成へ進む。体感を速くしたい場合は下げる
+- `ANSWER_SUGGESTION_QUESTION_SEGMENTS` / `ANSWER_SUGGESTION_CONTEXT_SEGMENTS`: 質問候補として渡す直近セグメント数と、その前に文脈として渡すセグメント数
+- `ANSWER_SUGGESTION_MAX_CONCURRENCY`: 同時に走らせる生成の上限(連打時の保護)。ボタンは連打でき、結果はカードとして積まれる
+- `ANTHROPIC_ANSWER_MODEL`: 2〜3秒の目標レイテンシに合わせ、既定は軽量モデル(Haiku)
 
 ## 5. 実装ロードマップ
 

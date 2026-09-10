@@ -30,3 +30,6 @@ logs/
 # Editor
 .vscode/
 .idea/
+
+# Cursor (レビュー結果などの作業データ)
+.cursor/
