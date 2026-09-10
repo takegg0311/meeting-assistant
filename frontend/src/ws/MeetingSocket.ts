@@ -1,4 +1,9 @@
-import type { ServerEvent, StartSessionMessage, StopSessionMessage } from "../types/messages";
+import type {
+  RequestAnswerSuggestionMessage,
+  ServerEvent,
+  StartSessionMessage,
+  StopSessionMessage,
+} from "../types/messages";
 
 type EventListener = (event: ServerEvent) => void;
 
@@ -70,6 +75,14 @@ export class MeetingSocket {
 
   stopSession(): void {
     this._sendControl<StopSessionMessage>({ type: "stop_session" });
+  }
+
+  /** 回答提案をリクエストする。結果は answer_suggestion イベントで request_id 紐付けで届く。 */
+  requestAnswerSuggestion(requestId: string): void {
+    this._sendControl<RequestAnswerSuggestionMessage>({
+      type: "request_answer_suggestion",
+      request_id: requestId,
+    });
   }
 
   /** stop_session送信後、サーバーのsession_stopped応答を待ってからclose()する。

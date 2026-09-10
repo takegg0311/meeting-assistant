@@ -3,10 +3,16 @@ import "./App.css";
 import { AudioCapturePipeline } from "./audio/AudioCapturePipeline";
 import type { AudioSourceProvider } from "./audio/AudioSourceProvider";
 import { DisplayAudioSource, MicrophoneSource } from "./audio/AudioSourceProvider";
+import { AnswerSuggestionPanel } from "./components/AnswerSuggestionPanel";
 import { AudioSourceSelector } from "./components/AudioSourceSelector";
 import { SttProviderSelector } from "./components/SttProviderSelector";
 import { TranscriptPanel } from "./components/TranscriptPanel";
-import type { AudioSource, SttProviderName, TranscriptEvent } from "./types/messages";
+import type {
+  AnswerSuggestionEvent,
+  AudioSource,
+  SttProviderName,
+  TranscriptEvent,
+} from "./types/messages";
 import { MeetingSocket } from "./ws/MeetingSocket";
 
 // 接続先は vite.config.ts が BACKEND_PORT / VITE_WS_URL から解決してビルド時に注入する。
@@ -19,6 +25,7 @@ function App() {
   const [sttProvider, setSttProvider] = useState<SttProviderName>("mock");
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [segments, setSegments] = useState<TranscriptEvent[]>([]);
+  const [suggestions, setSuggestions] = useState<AnswerSuggestionEvent[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const socketRef = useRef<MeetingSocket | null>(null);
@@ -29,6 +36,7 @@ function App() {
     setErrorMessage(null);
     setSessionState("starting");
     setSegments([]);
+    setSuggestions([]);
 
     try {
       const socket = new MeetingSocket(WS_URL);
@@ -38,6 +46,17 @@ function App() {
         if (event.type === "transcript") {
           setSegments((prev) => {
             const existingIndex = prev.findIndex((s) => s.segment_id === event.segment_id);
+            if (existingIndex === -1) {
+              return [...prev, event];
+            }
+            const next = [...prev];
+            next[existingIndex] = event;
+            return next;
+          });
+        } else if (event.type === "answer_suggestion") {
+          // generating で追加され、done|error で同じ request_id のカードを置き換える。
+          setSuggestions((prev) => {
+            const existingIndex = prev.findIndex((s) => s.request_id === event.request_id);
             if (existingIndex === -1) {
               return [...prev, event];
             }
@@ -89,6 +108,11 @@ function App() {
     setSessionState("idle");
   };
 
+  const handleRequestAnswerSuggestion = () => {
+    // request_id で generating カードと結果を紐付ける。連打は並行して受け付ける。
+    socketRef.current?.requestAnswerSuggestion(crypto.randomUUID());
+  };
+
   const isSessionActive = sessionState === "active" || sessionState === "starting";
 
   return (
@@ -109,9 +133,24 @@ function App() {
         )}
       </section>
 
+      <section className="controls">
+        <button
+          type="button"
+          className="answer-request"
+          onClick={handleRequestAnswerSuggestion}
+          disabled={sessionState !== "active"}
+        >
+          回答提案
+        </button>
+        <span className="answer-request-hint">
+          今の問いへの回答案を作ります(直前の発話が確定するまで少し待ちます)
+        </span>
+      </section>
+
       {errorMessage && <p className="error-banner">{errorMessage}</p>}
 
       <main>
+        <AnswerSuggestionPanel suggestions={suggestions} />
         <TranscriptPanel segments={segments} />
       </main>
     </div>
