@@ -5,10 +5,11 @@ import react from '@vitejs/plugin-react'
 // これがないとルートの `.env` が一切読み込まれず、`VITE_WS_URL` は常に undefined になる。
 const ENV_DIR = '..'
 const DEFAULT_BACKEND_PORT = '8000'
+const DEFAULT_FRONTEND_PORT = '3000'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
-  // 第3引数を '' にすることで、VITE_ プレフィックスの付かない `BACKEND_PORT` も読み込む
+  // 第3引数を '' にすることで、VITE_ プレフィックスの付かない `BACKEND_PORT` なども読み込む
   // (プロセスの環境変数も含まれるため `BACKEND_PORT=8001 npm run dev` でも効く)。
   const env = loadEnv(mode, ENV_DIR, '')
 
@@ -19,6 +20,12 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     envDir: ENV_DIR,
+    server: {
+      port: Number(env.FRONTEND_PORT || DEFAULT_FRONTEND_PORT),
+      // ポートが埋まっているとき黙って繰り上げると、バックエンドのCORS_ORIGINと
+      // 食い違ったまま気付けないため、起動を失敗させる。
+      strictPort: true,
+    },
     define: {
       'import.meta.env.VITE_WS_URL': JSON.stringify(wsUrl),
     },
