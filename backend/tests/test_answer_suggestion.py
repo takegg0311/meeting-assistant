@@ -15,12 +15,25 @@ pytestmark = pytest.mark.asyncio
 
 
 class FakeWebSocket:
-    """send_json された内容を記録するだけのWebSocketスタブ。"""
+    """send_json された内容を記録するWebSocketスタブ。
 
-    def __init__(self) -> None:
+    `block_on` を指定すると、その種別のイベント送信をイベント待ちで止められる。
+    `fail_from` を指定すると、その回数目以降の送信を切断相当で失敗させる。
+    """
+
+    def __init__(self, block_on: str | None = None, fail_from: int | None = None) -> None:
         self.sent: list[dict] = []
+        self.block_on = block_on
+        self.fail_from = fail_from
+        self.release = asyncio.Event()
+        self._attempts = 0
 
     async def send_json(self, payload: dict) -> None:
+        self._attempts += 1
+        if self.fail_from is not None and self._attempts >= self.fail_from:
+            raise RuntimeError("WebSocket is closed")
+        if self.block_on is not None and payload["type"] == self.block_on:
+            await self.release.wait()
         self.sent.append(payload)
 
     def events(self, event_type: str) -> list[dict]:
@@ -47,14 +60,19 @@ class FailingLlmProvider:
         raise RuntimeError("LLM unavailable")
 
 
-def make_session(llm_provider) -> tuple[MeetingSession, FakeWebSocket]:
-    websocket = FakeWebSocket()
+def make_session(llm_provider, websocket: "FakeWebSocket | None" = None):
+    """送信タスクを起動した状態のセッションを返す。
+
+    送信はキュー経由の単一タスクが行うため、起動しないとイベントが記録されない。
+    """
+    websocket = websocket or FakeWebSocket()
     session = MeetingSession(
         websocket=websocket,  # type: ignore[arg-type]
         stt_provider_name="mock",
         audio_source="microphone",
     )
     session._llm_provider = llm_provider  # type: ignore[assignment]
+    session._sender_task = asyncio.create_task(session._run_sender_loop())
     return session, websocket
 
 
@@ -71,9 +89,22 @@ def make_segment(text: str, is_final: bool = True) -> TranscriptEvent:
 
 
 async def drain(session: MeetingSession) -> None:
-    """起動済みの回答提案タスクの完了を待つ。"""
+    """回答提案タスクの完了と、送信キューの吐き出しを待つ。"""
     if session._answer_tasks:
         await asyncio.gather(*session._answer_tasks, return_exceptions=True)
+    await flush(session)
+
+
+async def flush(session: MeetingSession, timeout: float = 1.0) -> None:
+    """投入済みのイベントが送信タスクに処理されるまで待つ。
+
+    送信が意図的に詰まらせてあるテストでは待ち切れないため、タイムアウトで諦める
+    (詰まっていること自体が検証対象なので、ここで失敗させない)。
+    """
+    try:
+        await asyncio.wait_for(session._send_queue.join(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
 
 
 async def test_generating_event_is_sent_before_waiting(monkeypatch):
@@ -84,7 +115,8 @@ async def test_generating_event_is_sent_before_waiting(monkeypatch):
     await session.on_final_segment(make_segment("コストはどうなりますか？"))
 
     session.request_answer_suggestion("req-1")
-    await asyncio.sleep(0)  # タスクを起動させるが、grace period は完了させない
+    await asyncio.sleep(0)  # 生成タスクを起動し generating を投入させる
+    await flush(session)  # 送信まで進めるが、grace period は完了させない
 
     statuses = [e["status"] for e in ws.events("answer_suggestion")]
     assert statuses == ["generating"]
@@ -235,6 +267,7 @@ async def test_llm_failure_does_not_break_transcription(monkeypatch):
 
     # 失敗後もtranscript配信が続く
     await session.on_final_segment(make_segment("次の発話"))
+    await flush(session)
     assert ws.events("transcript")[-1]["text"] == "次の発話"
 
 
@@ -248,16 +281,13 @@ async def test_llm_init_failure_does_not_block_session(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "cloud_anthropic")
     monkeypatch.setattr(settings, "anthropic_api_key", "")  # 初期化を失敗させる
 
-    websocket = FakeWebSocket()
     # プロバイダを差し替えず、実際の遅延初期化パスを通す。
-    session = MeetingSession(
-        websocket=websocket,  # type: ignore[arg-type]
-        stt_provider_name="mock",
-        audio_source="microphone",
-    )
+    session, websocket = make_session(None)
+    session._llm_provider = None  # type: ignore[assignment]
 
     # セッション生成と文字起こしはLLMに依存せず成功する。
     await session.on_final_segment(make_segment("質問です"))
+    await flush(session)
     assert websocket.events("transcript")[-1]["text"] == "質問です"
 
     session.request_answer_suggestion("req-1")
@@ -268,6 +298,7 @@ async def test_llm_init_failure_does_not_block_session(monkeypatch):
 
     # 失敗後も文字起こしは継続する
     await session.on_final_segment(make_segment("次の発話"))
+    await flush(session)
     assert websocket.events("transcript")[-1]["text"] == "次の発話"
 
 
@@ -285,3 +316,184 @@ async def test_concurrent_requests_are_tracked_independently(monkeypatch):
 
     done = [e for e in ws.events("answer_suggestion") if e["status"] == "done"]
     assert {e["request_id"] for e in done} == {"req-1", "req-2", "req-3"}
+
+
+# --- 以下、Cursorレビュー指摘に対する回帰テスト ---
+
+
+async def test_answer_send_does_not_block_transcript(monkeypatch):
+    """回答提案の送信が詰まっても、文字起こし(優先度1)の配信は待たされない。
+
+    このプロジェクトの根幹方針(優先度1を絶対にブロックしない)の回帰テスト。
+    送信を単一タスク + キューに分離する前は、共有ロックで transcript が止まっていた。
+    """
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 0)
+    websocket = FakeWebSocket(block_on="answer_suggestion")
+    session, _ = make_session(FakeLlmProvider(), websocket)
+
+    session.request_answer_suggestion("req-1")
+    await asyncio.sleep(0)  # generating の送信がブロックに入る
+
+    # 送信が詰まっている状態でも on_final_segment は返る
+    await asyncio.wait_for(session.on_final_segment(make_segment("優先度1の発話")), timeout=0.5)
+
+    websocket.release.set()
+    await drain(session)
+    assert websocket.events("transcript")[-1]["text"] == "優先度1の発話"
+
+
+async def test_grace_uses_count_at_request_time(monkeypatch):
+    """grace period の基準は押下を受け取った時点の確定数。
+
+    基準をタスク開始後に取ると、押下からタスク実行までに確定したセグメントを
+    到着済みと誤認し、猶予を満額待ってしまう(修正前は満額待機していた)。
+    """
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 300)
+    llm = FakeLlmProvider()
+    session, _ = make_session(llm)
+    await session.on_final_segment(make_segment("最初の発話"))
+
+    started = time.monotonic()
+    session.request_answer_suggestion("req-1")
+    # タスクが grace に入る前にセグメントが確定する状況(STTが先に走るケース)
+    await session.on_final_segment(make_segment("押下直後に確定した質問末尾"))
+    await drain(session)
+    elapsed = time.monotonic() - started
+
+    texts = [t.text for t in llm.calls[0].question_turns]
+    assert "押下直後に確定した質問末尾" in texts
+    assert elapsed < 0.25, f"猶予を満額待っている: elapsed={elapsed}"
+
+
+async def test_history_updated_before_send(monkeypatch):
+    """確定セグメントの履歴更新は送信より先に行う。
+
+    送信が滞っても、待機中の回答提案が質問末尾を取りこぼさないため。
+    """
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 300)
+    llm = FakeLlmProvider()
+    websocket = FakeWebSocket(block_on="transcript")
+    session, _ = make_session(llm, websocket)
+
+    session.request_answer_suggestion("req-1")
+    await asyncio.sleep(0)
+    # transcript の送信は詰まるが、履歴とカウンタは先に更新される
+    await session.on_final_segment(make_segment("送信が滞る質問末尾"))
+    await drain(session)
+
+    texts = [t.text for t in llm.calls[0].question_turns]
+    assert "送信が滞る質問末尾" in texts
+
+
+async def test_stop_bounds_wait_and_cancels_slow_generation(monkeypatch):
+    """セッション終了時、生成中の回答提案を無期限には待たない。
+
+    クライアントは session_stopped を数秒で待つのをやめるため、それを超えて
+    待っても結果は届かない。期限を超えた生成はキャンセルする。
+    """
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 0)
+    monkeypatch.setattr(settings, "answer_suggestion_stop_grace_ms", 100)
+    llm = FakeLlmProvider(delay=5.0)  # 終わらない生成
+    session, websocket = make_session(llm)
+    await session.on_final_segment(make_segment("質問です"))
+
+    session.request_answer_suggestion("req-1")
+    await asyncio.sleep(0.02)
+
+    started = time.monotonic()
+    await session.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"停止が生成待ちで長引いている: elapsed={elapsed}"
+    assert websocket.events("status")[-1]["stage"] == "session_stopped"
+    assert not [t for t in session._answer_tasks if not t.done()]
+
+
+async def test_stop_without_notify_cancels_and_sends_nothing(monkeypatch):
+    """切断済みなら生成を待たず、クライアントへの送信も行わない。"""
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 0)
+    llm = FakeLlmProvider(delay=5.0)
+    session, websocket = make_session(llm)
+    await session.on_final_segment(make_segment("質問です"))
+
+    session.request_answer_suggestion("req-1")
+    await asyncio.sleep(0.02)
+    sent_before = len(websocket.sent)
+
+    started = time.monotonic()
+    await session.stop(notify_client=False)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert len(websocket.sent) == sent_before, "切断後に送信している"
+    assert not [e for e in websocket.events("status") if e["stage"] == "session_stopped"]
+
+
+async def test_llm_timeout_falls_back_to_error(monkeypatch):
+    """LLMが返らない場合も generating のまま放置せず error へ落とす。
+
+    完了条件「LLM呼び出しが失敗しても…カードにエラー表示のみが出る」は、
+    例外だけでなくハングにも当てはまる必要がある。
+    """
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 0)
+    monkeypatch.setattr(settings, "answer_suggestion_timeout_ms", 80)
+    session, websocket = make_session(FakeLlmProvider(delay=5.0))
+    await session.on_final_segment(make_segment("質問です"))
+
+    session.request_answer_suggestion("req-1")
+    await drain(session)
+
+    errors = [e for e in websocket.events("answer_suggestion") if e["status"] == "error"]
+    assert len(errors) == 1
+    assert "時間内" in errors[0]["message"]
+
+    # ハング後も文字起こしは継続する
+    await session.on_final_segment(make_segment("次の発話"))
+    await flush(session)
+    assert websocket.events("transcript")[-1]["text"] == "次の発話"
+
+
+async def test_send_failure_does_not_stop_transcription(monkeypatch):
+    """送信が切断で失敗しても、以降の on_final_segment は例外を投げない。"""
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 0)
+    websocket = FakeWebSocket(fail_from=1)
+    session, _ = make_session(FakeLlmProvider(), websocket)
+
+    await session.on_final_segment(make_segment("送信に失敗する発話"))
+    await flush(session)
+    # 失敗後も呼び出し側へ例外は伝わらない
+    await session.on_final_segment(make_segment("その後の発話"))
+    await flush(session)
+
+    assert session._send_failed is True
+
+
+async def test_semaphore_limits_peak_concurrency(monkeypatch):
+    """同時実行数の上限が実際に効いている(上限を超える件数で同時実行数を測る)。"""
+    monkeypatch.setattr(settings, "answer_suggestion_grace_ms", 0)
+    monkeypatch.setattr(settings, "answer_suggestion_max_concurrency", 2)
+
+    peak = 0
+    running = 0
+
+    class CountingLlmProvider:
+        async def generate_answer_suggestion(self, context):
+            nonlocal peak, running
+            running += 1
+            peak = max(peak, running)
+            try:
+                await asyncio.sleep(0.05)
+                return "x"
+            finally:
+                running -= 1
+
+    session, websocket = make_session(CountingLlmProvider())
+    await session.on_final_segment(make_segment("質問です"))
+
+    for i in range(6):
+        session.request_answer_suggestion(f"req-{i}")
+    await drain(session)
+
+    assert peak <= 2, f"同時実行数の上限を超えている: peak={peak}"
+    done = [e for e in websocket.events("answer_suggestion") if e["status"] == "done"]
+    assert len(done) == 6
