@@ -6,6 +6,7 @@ import type {
 } from "../types/messages";
 
 type EventListener = (event: ServerEvent) => void;
+type CloseListener = () => void;
 
 /**
  * 音声チャンクの送信バッファ。接続が切れている間の送信要求を溜めておき、
@@ -33,6 +34,7 @@ class SendBuffer {
 export class MeetingSocket {
   private ws: WebSocket | null = null;
   private listeners: Set<EventListener> = new Set();
+  private closeListeners: Set<CloseListener> = new Set();
   private sendBuffer = new SendBuffer();
   private readonly url: string;
 
@@ -60,6 +62,8 @@ export class MeetingSocket {
       this.ws.onmessage = (event) => this._handleMessage(event);
       this.ws.onclose = () => {
         // 音声送信は継続してバッファに溜め、再接続時にresendする想定。
+        // 生成中の回答提案は結果が届かなくなるため、購読者へ通知する。
+        this.closeListeners.forEach((listener) => listener());
       };
     });
   }
@@ -67,6 +71,12 @@ export class MeetingSocket {
   onEvent(listener: EventListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** 接続が閉じたときに呼ばれる。意図的な close と予期しない切断の両方で発火する。 */
+  onClose(listener: CloseListener): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
   }
 
   startSession(message: Omit<StartSessionMessage, "type">): void {

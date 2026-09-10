@@ -20,6 +20,13 @@ export function TranscriptPanel({ segments }: Props) {
     setFollowLatest(distanceFromBottom <= BOTTOM_THRESHOLD_PX);
   };
 
+  // 追従の停止はスクロール位置に由来する状態なので、文字起こしが空に戻る
+  // (セッション再開)ときは既定へ戻す。残すと次のセッションで追従しない。
+  const isEmpty = segments.length === 0;
+  useEffect(() => {
+    if (isEmpty) setFollowLatest(true);
+  }, [isEmpty]);
+
   useEffect(() => {
     if (!followLatest) return;
     const el = scrollRef.current;
@@ -59,7 +66,7 @@ export function TranscriptPanel({ segments }: Props) {
           ))
         )}
       </div>
-      {!followLatest && (
+      {!followLatest && !isEmpty && (
         <button
           type="button"
           className="follow-latest"

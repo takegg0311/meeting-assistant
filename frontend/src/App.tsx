@@ -32,6 +32,18 @@ function App() {
   const pipelineRef = useRef<AudioCapturePipeline | null>(null);
   const providerRef = useRef<AudioSourceProvider | null>(null);
 
+  /** 未完了の生成中カードをエラー表示に落とす。
+   * セッションを閉じると結果は届かないため、生成中のまま残さない。 */
+  const failPendingSuggestions = () => {
+    setSuggestions((prev) =>
+      prev.map((s) =>
+        s.status === "generating"
+          ? { ...s, status: "error", message: "セッションが終了したため中断しました。" }
+          : s,
+      ),
+    );
+  };
+
   const handleStart = async () => {
     setErrorMessage(null);
     setSessionState("starting");
@@ -69,6 +81,9 @@ function App() {
         }
       });
 
+      // 予期しない切断でも生成中カードを残さない(サーバー停止など)。
+      socket.onClose(() => failPendingSuggestions());
+
       const provider: AudioSourceProvider =
         audioSource === "microphone" ? new MicrophoneSource() : new DisplayAudioSource();
 
@@ -105,6 +120,7 @@ function App() {
     socketRef.current = null;
     pipelineRef.current = null;
     providerRef.current = null;
+    failPendingSuggestions();
     setSessionState("idle");
   };
 
