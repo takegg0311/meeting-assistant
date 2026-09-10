@@ -16,7 +16,7 @@ app = FastAPI(title="Meeting Assistant Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.cors_origin],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -74,3 +74,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await session.stop()
         if websocket.client_state != WebSocketState.DISCONNECTED:
             await websocket.close()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # BACKEND_PORT を待受ポートの単一の正とするための開発用エントリポイント。
+    # `uv run python -m app.main` で起動する(uvicornコマンドの --port 指定は不要)。
+    uvicorn.run(
+        "app.main:app",
+        host="127.0.0.1",
+        port=settings.backend_port,
+        reload=settings.env == "development",
+        log_level=settings.log_level.lower(),
+    )

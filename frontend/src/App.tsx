@@ -9,7 +9,8 @@ import { TranscriptPanel } from "./components/TranscriptPanel";
 import type { AudioSource, SttProviderName, TranscriptEvent } from "./types/messages";
 import { MeetingSocket } from "./ws/MeetingSocket";
 
-const WS_URL = import.meta.env.VITE_WS_URL ?? "ws://localhost:8000/ws";
+// 接続先は vite.config.ts が BACKEND_PORT / VITE_WS_URL から解決してビルド時に注入する。
+const WS_URL = import.meta.env.VITE_WS_URL;
 
 type SessionState = "idle" | "starting" | "active" | "stopping";
 

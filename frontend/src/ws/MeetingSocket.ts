@@ -44,7 +44,14 @@ export class MeetingSocket {
         this._resendUnacked();
         resolve();
       };
-      this.ws.onerror = (err) => reject(err);
+      // WebSocketのonerrorはEventしか渡さないため、そのままrejectすると `[object Event]` と
+      // 表示され原因が分からない。接続先を含むErrorに変換する。
+      this.ws.onerror = () =>
+        reject(
+          new Error(
+            `WebSocketの接続に失敗しました: ${this.url} (バックエンドが起動しているか、ポート番号が一致しているか確認してください)`,
+          ),
+        );
       this.ws.onmessage = (event) => this._handleMessage(event);
       this.ws.onclose = () => {
         // 音声送信は継続してバッファに溜め、再接続時にresendする想定。

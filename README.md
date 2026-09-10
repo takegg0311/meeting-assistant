@@ -87,10 +87,18 @@ cp .env.sample .env
 ```bash
 cd backend
 uv sync --extra dev
-uv run uvicorn app.main:app --reload --port 8000
+uv run python -m app.main
 ```
 
 `uv sync` が `.venv` を作成し、`pyproject.toml` / `uv.lock` に基づいて依存を解決・インストールする。
+
+待受ポートは `.env` の `BACKEND_PORT`(未設定時は8000)で決まる。フロントエンドの接続先も同じ `BACKEND_PORT` から解決されるため、ポートを変えるときは `.env` の1箇所を書き換えるだけでよい。
+
+`uvicorn` コマンドを直接使う場合は `--port` の指定が必須(指定しないと `BACKEND_PORT` に関係なく8000で待受する)。
+
+```bash
+uv run uvicorn app.main:app --reload --port "$BACKEND_PORT"
+```
 
 ### フロントエンド(React)
 
@@ -102,7 +110,20 @@ npm install
 npm run dev
 ```
 
-デフォルトでフロントエンドは `http://localhost:3000`、バックエンドは `http://localhost:8000`(WebSocket: `ws://localhost:8000/ws`)で起動する想定。
+デフォルトでフロントエンドは `http://localhost:3000`、バックエンドは `http://localhost:8000`(WebSocket: `ws://localhost:8000/ws`)で起動する。
+
+ポートはいずれも `.env` の1箇所で変更でき、関連する設定は自動的に追従する。
+
+| 環境変数 | 既定値 | 効く範囲 |
+|---|---|---|
+| `BACKEND_PORT` | `8000` | バックエンドの待受ポート。フロントエンドのWebSocket接続先(`VITE_WS_URL`)もここから解決される |
+| `FRONTEND_PORT` | `3000` | Vite開発サーバーの待受ポート。バックエンドのCORS許可オリジン(`CORS_ORIGIN`)もここから解決される |
+
+`VITE_WS_URL` / `CORS_ORIGIN` を明示した場合はそちらが優先される(別ホストや `wss://` を使う場合のみ設定する)。
+
+Vite開発サーバーは `strictPort: true` で起動するため、`FRONTEND_PORT` が他プロセスに使われていると**黙って別ポートに繰り上がらず起動に失敗する**。CORS許可オリジンと食い違ったまま気付かない事故を防ぐための設定なので、衝突した場合は `FRONTEND_PORT` を変更する(例: `FRONTEND_PORT=3001`)。
+
+なお `FRONTEND_PORT` を既定値から変えた場合、Claude Codeのプレビュー用設定 `.claude/launch.json` の `port` も同じ値に合わせる必要がある。
 
 ### STTプロバイダの設定
 
