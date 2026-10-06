@@ -119,7 +119,13 @@ export class MeetingSocket {
     });
   }
 
-  sendAudioChunk(chunk: ArrayBuffer): void {
+  sendAudioChunk(chunk: ArrayBuffer, sourceIndex?: number): void {
+    if (sourceIndex !== undefined) {
+      const frame = new Uint8Array(chunk.byteLength + 1);
+      frame[0] = sourceIndex;
+      frame.set(new Uint8Array(chunk), 1);
+      chunk = frame.buffer;
+    }
     const item = this.sendBuffer.enqueue(chunk);
     if (this._isOpen()) {
       this.ws!.send(item.chunk);

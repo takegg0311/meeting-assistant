@@ -1,10 +1,10 @@
-import type { AudioSource } from "../types/messages";
+import type { AudioSourceMode } from "../types/messages";
 import { isDisplayAudioSupported } from "../audio/AudioSourceProvider";
 
 interface Props {
-  value: AudioSource;
+  value: AudioSourceMode;
   disabled: boolean;
-  onChange: (source: AudioSource) => void;
+  onChange: (source: AudioSourceMode) => void;
 }
 
 const displaySupported = isDisplayAudioSupported();
@@ -33,6 +33,12 @@ export function AudioSourceSelector({ value, disabled, onChange }: Props) {
           onChange={() => onChange("tab_audio")}
         />
         タブ / システム音声{!displaySupported && "(非対応)"}
+      </label>
+      <label>
+        <input type="radio" name="audio-source" value="meeting"
+          checked={value === "meeting"} disabled={!displaySupported}
+          onChange={() => onChange("meeting")} />
+        タブ / システム音声 ＋ マイク
       </label>
     </fieldset>
   );

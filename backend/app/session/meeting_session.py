@@ -18,12 +18,18 @@ _QUEUE_DONE = object()
 class MeetingSession:
     """WebSocket接続ごとに1つ保持し、音声受信→STT→transcript配信を仲介する。"""
 
-    def __init__(self, websocket: WebSocket, stt_provider_name: str, audio_source: AudioSource):
+    def __init__(
+        self, websocket: WebSocket, stt_provider_name: str, audio_source: AudioSource,
+        audio_sources: list[AudioSource] | None = None,
+    ):
         self._websocket = websocket
-        self._audio_source = audio_source
-        self._stt_provider = get_stt_provider(stt_provider_name)
-        self._audio_queue: asyncio.Queue[bytes | object] = asyncio.Queue()
-        self._stt_task: asyncio.Task | None = None
+        self._audio_sources = audio_sources or [audio_source]
+        if len(set(self._audio_sources)) != len(self._audio_sources):
+            raise ValueError("Duplicate audio sources")
+        self._framed_audio = audio_sources is not None
+        self._providers = {source: get_stt_provider(stt_provider_name) for source in self._audio_sources}
+        self._queues: dict[AudioSource, asyncio.Queue] = {source: asyncio.Queue() for source in self._audio_sources}
+        self._stt_tasks: list[asyncio.Task] = []
 
         # 送信は単一のタスクが直列に行い、各所からはキューへ投入するだけにする。
         # 送信側で詰まっても、投入する側(特に優先度1の文字起こし)を待たせないため。
@@ -52,10 +58,17 @@ class MeetingSession:
     async def start(self) -> None:
         self._sender_task = asyncio.create_task(self._run_sender_loop())
         self._send(StatusEvent(stage="stt_connected", message="STT provider ready"))
-        self._stt_task = asyncio.create_task(self._run_stt_loop())
+        self._stt_tasks = [asyncio.create_task(self._run_stt_loop(source)) for source in self._audio_sources]
 
     async def push_audio_chunk(self, chunk: bytes) -> None:
-        await self._audio_queue.put(chunk)
+        source = self._audio_sources[0]
+        if self._framed_audio:
+            if not chunk or chunk[0] >= len(self._audio_sources):
+                self._send(StatusEvent(stage="error", message="Invalid audio source frame"))
+                return
+            source = self._audio_sources[chunk[0]]
+            chunk = chunk[1:]
+        await self._queues[source].put(chunk)
 
     async def stop(self, *, notify_client: bool = True) -> None:
         """セッションを終了する。
@@ -63,9 +76,9 @@ class MeetingSession:
         notify_client=False は WebSocket が既に切れている場合に使う。生成中の
         回答提案を待たずに畳み、クライアントへの送信も行わない。
         """
-        await self._audio_queue.put(_QUEUE_DONE)
-        if self._stt_task is not None:
-            await self._stt_task
+        for queue in self._queues.values():
+            await queue.put(_QUEUE_DONE)
+        await asyncio.gather(*self._stt_tasks)
 
         if notify_client:
             # 生成中の回答提案は結果を届けてから閉じる(捨てるとカードが生成中のまま
@@ -97,21 +110,23 @@ class MeetingSession:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _audio_chunk_iterator(self) -> AsyncIterator[bytes]:
+    async def _audio_chunk_iterator(self, source: AudioSource) -> AsyncIterator[bytes]:
         while True:
-            item = await self._audio_queue.get()
+            item = await self._queues[source].get()
             if item is _QUEUE_DONE:
                 return
             yield item  # type: ignore[misc]
 
-    async def _run_stt_loop(self) -> None:
+    async def _run_stt_loop(self, source: AudioSource) -> None:
         try:
-            async for event in self._stt_provider.stream_transcribe(self._audio_chunk_iterator()):
-                event.audio_source = self._audio_source
+            async for event in self._providers[source].stream_transcribe(self._audio_chunk_iterator(source)):
+                event.audio_source = source
+                event.segment_id = f"{source}:{event.segment_id}"
+                event.speaker_id = "自分" if source == "microphone" else "相手"
                 await self.on_final_segment(event)
         except Exception:
             logger.exception("STT loop failed")
-            self._send(StatusEvent(stage="error", message="STT processing failed"))
+            self._send(StatusEvent(stage="error", message=f"STT processing failed: {source}"))
 
     async def on_final_segment(self, segment: TranscriptEvent) -> None:
         # 履歴の更新と通知はネットワーク送信より先に行う。送信が滞っても、待っている
@@ -235,7 +250,7 @@ class MeetingSession:
 
         「どこからどこまでが質問か」の境界は厳密に決めず、プロンプト側で吸収する。
         """
-        segments = list(self._final_segments)
+        segments = sorted(self._final_segments, key=lambda segment: segment.start_ts)
         question_count = settings.answer_suggestion_question_segments
         question_segments = segments[-question_count:]
         context_segments = segments[: len(segments) - len(question_segments)]

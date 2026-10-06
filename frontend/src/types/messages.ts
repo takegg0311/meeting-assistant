@@ -1,10 +1,12 @@
 export type AudioSource = "microphone" | "tab_audio" | "system_audio";
+export type AudioSourceMode = AudioSource | "meeting";
 export type SttProviderName = "cloud_openai" | "cloud_google" | "local_whispercpp" | "mock";
 
 export interface StartSessionMessage {
   type: "start_session";
   stt_provider: SttProviderName;
   audio_source: AudioSource;
+  audio_sources?: AudioSource[];
   features: string[];
 }
 

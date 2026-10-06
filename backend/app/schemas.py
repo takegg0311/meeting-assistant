@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 AudioSource = Literal["microphone", "tab_audio", "system_audio"]
 SttProviderName = Literal["cloud_openai", "cloud_google", "local_whispercpp", "mock"]
@@ -11,6 +11,7 @@ class StartSessionMessage(BaseModel):
     type: Literal["start_session"] = "start_session"
     stt_provider: SttProviderName = "mock"
     audio_source: AudioSource = "microphone"
+    audio_sources: list[AudioSource] | None = Field(default=None, min_length=1, max_length=3)
     features: list[str] = []
 
 

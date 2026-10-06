@@ -9,7 +9,7 @@ import { SttProviderSelector } from "./components/SttProviderSelector";
 import { TranscriptPanel } from "./components/TranscriptPanel";
 import type {
   AnswerSuggestionEvent,
-  AudioSource,
+  AudioSourceMode,
   SttProviderName,
   TranscriptEvent,
 } from "./types/messages";
@@ -21,7 +21,7 @@ const WS_URL = import.meta.env.VITE_WS_URL;
 type SessionState = "idle" | "starting" | "active" | "stopping";
 
 function App() {
-  const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
+  const [audioSource, setAudioSource] = useState<AudioSourceMode>("microphone");
   const [sttProvider, setSttProvider] = useState<SttProviderName>("mock");
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [segments, setSegments] = useState<TranscriptEvent[]>([]);
@@ -29,8 +29,8 @@ function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const socketRef = useRef<MeetingSocket | null>(null);
-  const pipelineRef = useRef<AudioCapturePipeline | null>(null);
-  const providerRef = useRef<AudioSourceProvider | null>(null);
+  const pipelineRef = useRef<AudioCapturePipeline[]>([]);
+  const providerRef = useRef<AudioSourceProvider[]>([]);
 
   /** 未完了の生成中カードをエラー表示に落とす。
    * セッションを閉じると結果は届かないため、生成中のまま残さない。 */
@@ -50,8 +50,11 @@ function App() {
     setSegments([]);
     setSuggestions([]);
 
+    const socket = new MeetingSocket(WS_URL);
+    const providers: AudioSourceProvider[] = [];
+    const pipelines: AudioCapturePipeline[] = [];
+    let sending = false;
     try {
-      const socket = new MeetingSocket(WS_URL);
       await socket.connect();
 
       socket.onEvent((event) => {
@@ -59,11 +62,11 @@ function App() {
           setSegments((prev) => {
             const existingIndex = prev.findIndex((s) => s.segment_id === event.segment_id);
             if (existingIndex === -1) {
-              return [...prev, event];
+              return [...prev, event].sort((a, b) => a.start_ts - b.start_ts);
             }
             const next = [...prev];
             next[existingIndex] = event;
-            return next;
+            return next.sort((a, b) => a.start_ts - b.start_ts);
           });
         } else if (event.type === "answer_suggestion") {
           // generating で追加され、done|error で同じ request_id のカードを置き換える。
@@ -84,25 +87,30 @@ function App() {
       // 予期しない切断でも生成中カードを残さない(サーバー停止など)。
       socket.onClose(() => failPendingSuggestions());
 
-      const provider: AudioSourceProvider =
-        audioSource === "microphone" ? new MicrophoneSource() : new DisplayAudioSource();
-
-      const pipeline = new AudioCapturePipeline((chunk) => {
-        socket.sendAudioChunk(chunk);
-      });
-      await pipeline.start(provider);
-
+      providers.push(audioSource === "microphone" ? new MicrophoneSource() : new DisplayAudioSource());
+      if (audioSource === "meeting") providers.push(new MicrophoneSource());
+      for (const [index, provider] of providers.entries()) {
+        const pipeline = new AudioCapturePipeline((chunk) => {
+          if (sending) socket.sendAudioChunk(chunk, audioSource === "meeting" ? index : undefined);
+        });
+        pipelines.push(pipeline);
+        await pipeline.start(provider);
+      }
       socket.startSession({
         stt_provider: sttProvider,
-        audio_source: provider.sourceType,
+        audio_source: providers[0].sourceType,
+        ...(audioSource === "meeting" ? { audio_sources: providers.map((p) => p.sourceType) } : {}),
         features: [],
       });
-
+      sending = true;
       socketRef.current = socket;
-      pipelineRef.current = pipeline;
-      providerRef.current = provider;
+      pipelineRef.current = pipelines;
+      providerRef.current = providers;
       setSessionState("active");
     } catch (err) {
+      pipelines.forEach((pipeline) => pipeline.stop());
+      providers.forEach((provider) => provider.stop());
+      socket.close();
       setErrorMessage(err instanceof Error ? err.message : String(err));
       setSessionState("idle");
     }
@@ -110,16 +118,16 @@ function App() {
 
   const handleStop = async () => {
     setSessionState("stopping");
-    pipelineRef.current?.stop();
-    providerRef.current?.stop();
+    pipelineRef.current.forEach((pipeline) => pipeline.stop());
+    providerRef.current.forEach((provider) => provider.stop());
 
     socketRef.current?.stopSession();
     await socketRef.current?.waitForStop();
     socketRef.current?.close();
 
     socketRef.current = null;
-    pipelineRef.current = null;
-    providerRef.current = null;
+    pipelineRef.current = [];
+    providerRef.current = [];
     failPendingSuggestions();
     setSessionState("idle");
   };

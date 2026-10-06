@@ -57,6 +57,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             websocket=websocket,
                             stt_provider_name=start_msg.stt_provider,
                             audio_source=start_msg.audio_source,
+                            audio_sources=start_msg.audio_sources,
                         )
                     except Exception as exc:
                         logger.exception("Failed to start STT provider: %s", start_msg.stt_provider)
