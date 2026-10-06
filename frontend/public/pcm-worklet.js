@@ -22,7 +22,8 @@ class PcmWorkletProcessor extends AudioWorkletProcessor {
     while (this.buffer.length >= this.targetFrameCount) {
       const frame = this.buffer.slice(0, this.targetFrameCount);
       this.buffer = this.buffer.slice(this.targetFrameCount);
-      this.port.postMessage(this._floatToPcm16(frame), [frame.buffer]);
+      const pcm = this._floatToPcm16(frame);
+      this.port.postMessage(pcm, [pcm]);
     }
 
     return true;

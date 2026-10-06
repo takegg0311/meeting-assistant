@@ -124,9 +124,9 @@ class MeetingSession:
                 event.segment_id = f"{source}:{event.segment_id}"
                 event.speaker_id = "自分" if source == "microphone" else "相手"
                 await self.on_final_segment(event)
-        except Exception:
-            logger.exception("STT loop failed")
-            self._send(StatusEvent(stage="error", message=f"STT processing failed: {source}"))
+        except Exception as exc:
+            logger.exception("STT loop failed: %s", source)
+            self._send(StatusEvent(stage="error", message=f"STT processing failed ({source}): {exc}"))
 
     async def on_final_segment(self, segment: TranscriptEvent) -> None:
         # 履歴の更新と通知はネットワーク送信より先に行う。送信が滞っても、待っている

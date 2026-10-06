@@ -18,6 +18,8 @@ import { MeetingSocket } from "./ws/MeetingSocket";
 // 接続先は vite.config.ts が BACKEND_PORT / VITE_WS_URL から解決してビルド時に注入する。
 const WS_URL = import.meta.env.VITE_WS_URL;
 
+type InputStatus = { label: string; level: number; chunks: number };
+
 type SessionState = "idle" | "starting" | "active" | "stopping";
 
 function App() {
@@ -27,6 +29,8 @@ function App() {
   const [segments, setSegments] = useState<TranscriptEvent[]>([]);
   const [suggestions, setSuggestions] = useState<AnswerSuggestionEvent[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const [inputStatus, setInputStatus] = useState<InputStatus[]>([]);
 
   const socketRef = useRef<MeetingSocket | null>(null);
   const pipelineRef = useRef<AudioCapturePipeline[]>([]);
@@ -49,12 +53,41 @@ function App() {
     setSessionState("starting");
     setSegments([]);
     setSuggestions([]);
+    setInputStatus([]);
 
     const socket = new MeetingSocket(WS_URL);
     const providers: AudioSourceProvider[] = [];
     const pipelines: AudioCapturePipeline[] = [];
     let sending = false;
     try {
+      // 全入力の取得・AudioContext開始を最初のawaitより前に呼び出す。
+      providers.push(audioSource === "microphone" ? new MicrophoneSource() : new DisplayAudioSource());
+      if (audioSource === "meeting") providers.push(new MicrophoneSource());
+      const status = providers.map((_, index) => ({
+        label: audioSource === "microphone" || index === 1 ? "マイク（自分）" : "共有音声（相手）",
+        level: 0, chunks: 0,
+      }));
+      setInputStatus(status);
+      let lastUpdate = 0;
+      providers.forEach((_, index) => {
+        pipelines.push(new AudioCapturePipeline((chunk) => {
+          if (!sending) return;
+          socket.sendAudioChunk(chunk, audioSource === "meeting" ? index : undefined);
+          const pcm = new Int16Array(chunk);
+          let energy = 0;
+          for (const sample of pcm) energy += (sample / 32768) ** 2;
+          status[index] = { ...status[index],
+            level: Math.sqrt(energy / Math.max(1, pcm.length)),
+            chunks: status[index].chunks + 1 };
+          if (performance.now() - lastUpdate > 250) {
+            lastUpdate = performance.now();
+            setInputStatus(status.map((input) => ({ ...input })));
+          }
+        }));
+      });
+      const starts = await Promise.allSettled(pipelines.map((pipeline, index) => pipeline.start(providers[index])));
+      const failed = starts.find((result) => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
       await socket.connect();
 
       socket.onEvent((event) => {
@@ -87,15 +120,6 @@ function App() {
       // 予期しない切断でも生成中カードを残さない(サーバー停止など)。
       socket.onClose(() => failPendingSuggestions());
 
-      providers.push(audioSource === "microphone" ? new MicrophoneSource() : new DisplayAudioSource());
-      if (audioSource === "meeting") providers.push(new MicrophoneSource());
-      for (const [index, provider] of providers.entries()) {
-        const pipeline = new AudioCapturePipeline((chunk) => {
-          if (sending) socket.sendAudioChunk(chunk, audioSource === "meeting" ? index : undefined);
-        });
-        pipelines.push(pipeline);
-        await pipeline.start(provider);
-      }
       socket.startSession({
         stt_provider: sttProvider,
         audio_source: providers[0].sourceType,
@@ -151,7 +175,7 @@ function App() {
         {sessionState === "idle" ? (
           <button onClick={handleStart}>セッション開始</button>
         ) : (
-          <button onClick={handleStop} disabled={sessionState === "stopping"}>
+          <button onClick={handleStop} disabled={sessionState === "stopping" || sessionState === "starting"}>
             セッション終了
           </button>
         )}
@@ -170,6 +194,17 @@ function App() {
           今の問いへの回答案を作ります(直前の発話が確定するまで少し待ちます)
         </span>
       </section>
+
+      {sessionState === "active" && (
+        <section className="controls" aria-label="音声入力状況">
+          {inputStatus.map((input) => (
+            <label key={input.label}>
+              {input.label} <meter min={0} max={0.2} value={input.level} aria-label={`${input.label}の音量`} />
+              {input.chunks === 0 ? " 音声データ待ち" : ` 送信中（${input.chunks}チャンク）`}
+            </label>
+          ))}
+        </section>
+      )}
 
       {errorMessage && <p className="error-banner">{errorMessage}</p>}
 
