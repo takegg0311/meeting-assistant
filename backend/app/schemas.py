@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 AudioSource = Literal["microphone", "tab_audio", "system_audio"]
 SttProviderName = Literal["cloud_openai", "cloud_google", "local_whispercpp", "mock"]
@@ -13,6 +13,10 @@ class StartSessionMessage(BaseModel):
     audio_source: AudioSource = "microphone"
     audio_sources: list[AudioSource] | None = Field(default=None, min_length=1, max_length=3)
     features: list[str] = []
+    vad_threshold_dbfs: float = Field(
+        default=-45.0, ge=-70, le=-15,
+        validation_alias=AliasChoices("vad_threshold_dbfs", "google_vad_threshold_dbfs"),
+    )
 
 
 class StopSessionMessage(BaseModel):

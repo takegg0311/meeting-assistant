@@ -1,79 +1,65 @@
 import math
-import time
-from array import array
+import struct
+
+
+def pcm_level_dbfs(chunk: bytes) -> float:
+    """PCM16LEのRMS音量。0 dBFSが最大音量。不完全な末尾サンプルは無視。"""
+    samples = [sample[0] for sample in struct.iter_unpack("<h", chunk[:len(chunk) // 2 * 2])]
+    if not samples:
+        return -math.inf
+    rms = math.sqrt(sum(sample * sample for sample in samples) / len(samples)) / 32768
+    return 20 * math.log10(rms) if rms else -math.inf
+
+
+class SilenceDetector:
+    """全STT共通の音量VAD。時間は受信速度ではなくPCMの音声長から算出する。"""
+
+    def __init__(self, sample_rate: int, threshold_dbfs: float = -45.0,
+                 silence_seconds: float = 0.8, min_seconds: float = 0.0):
+        self.sample_rate = sample_rate
+        self.threshold_dbfs = threshold_dbfs
+        self.silence_seconds = silence_seconds
+        self.min_seconds = min_seconds
+        self.reset()
+
+    def reset(self) -> None:
+        self.audio_seconds = 0.0
+        self.quiet_seconds = 0.0
+        self.has_speech = False
+
+    def push(self, chunk: bytes) -> bool:
+        duration = (len(chunk) // 2) / self.sample_rate
+        self.audio_seconds += duration
+        if pcm_level_dbfs(chunk) > self.threshold_dbfs:
+            self.has_speech = True
+            self.quiet_seconds = 0.0
+        else:
+            self.quiet_seconds += duration
+        return (self.has_speech and self.audio_seconds >= self.min_seconds
+                and self.quiet_seconds + 1e-9 >= self.silence_seconds)
 
 
 class SilenceSegmenter:
-    """PCM16LEチャンクのRMSエネルギーを見て、無音がsilence_threshold_ms続いたら
-    それまでに溜めたチャンクを1発話セグメントとして確定させる。
+    """共通VADで発話をまとめる。長い発話はバッファ肥大化を避けるため区切る。"""
 
-    whisper.cpp(subprocessバッチ実行)向けに、確定した発話区間の音声をまとめて渡すために使う。
-    クラウド系(OpenAI Realtime / Google StreamingRecognize)はサーバー側VADを内蔵するため使用しない。
-    """
-
-    def __init__(
-        self,
-        sample_rate: int,
-        energy_threshold: float = 0.01,
-        silence_threshold_ms: int = 700,
-    ):
-        self._sample_rate = sample_rate
-        self._energy_threshold = energy_threshold
-        self._silence_threshold_ms = silence_threshold_ms
-
+    def __init__(self, sample_rate: int, threshold_dbfs: float = -45.0,
+                 max_seconds: float = 30.0):
+        self.detector = SilenceDetector(sample_rate, threshold_dbfs)
+        self.max_seconds = max_seconds
         self._buffer = bytearray()
-        self._silence_started_at: float | None = None
-        self._has_speech = False
 
     def push(self, chunk: bytes) -> bytes | None:
-        """chunkを取り込む。無音区間確定によりセグメントが完了したら、そのPCMバイト列を返す。"""
-        is_speech = self._is_speech(chunk)
+        boundary = self.detector.push(chunk)
+        if not self.detector.has_speech:
+            self.detector.reset()
+            return None
         self._buffer.extend(chunk)
-
-        if is_speech:
-            self._has_speech = True
-            self._silence_started_at = None
-            return None
-
-        if not self._has_speech:
-            # まだ発話が始まっていない無音は捨てる(バッファ肥大化防止)
-            self._buffer.clear()
-            return None
-
-        now = time.monotonic()
-        if self._silence_started_at is None:
-            self._silence_started_at = now
-            return None
-
-        elapsed_ms = (now - self._silence_started_at) * 1000
-        if elapsed_ms >= self._silence_threshold_ms:
-            return self._flush()
+        if boundary or self.detector.audio_seconds >= self.max_seconds:
+            return self.flush_remaining()
         return None
 
     def flush_remaining(self) -> bytes | None:
-        """セッション終了時などに、無音確定を待たず残りのバッファを取り出す。"""
-        if self._has_speech and len(self._buffer) > 0:
-            return self._flush()
-        return None
-
-    def _flush(self) -> bytes:
-        segment = bytes(self._buffer)
+        segment = bytes(self._buffer) if self.detector.has_speech and self._buffer else None
         self._buffer.clear()
-        self._has_speech = False
-        self._silence_started_at = None
+        self.detector.reset()
         return segment
-
-    def _is_speech(self, chunk: bytes) -> bool:
-        if len(chunk) < 2:
-            return False
-        # 奇数バイトは不完全なサンプルとして無視する
-        usable_len = len(chunk) - (len(chunk) % 2)
-        samples = array("h")
-        samples.frombytes(chunk[:usable_len])
-        if len(samples) == 0:
-            return False
-
-        sum_squares = sum(sample * sample for sample in samples)
-        rms = math.sqrt(sum_squares / len(samples))
-        normalized = rms / 32768.0
-        return normalized >= self._energy_threshold

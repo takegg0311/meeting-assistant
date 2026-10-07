@@ -3,6 +3,7 @@ import base64
 import contextlib
 import json
 import logging
+import math
 import time
 import uuid
 from array import array
@@ -12,6 +13,7 @@ import websockets
 
 from app.config import settings
 from app.schemas import TranscriptEvent
+from app.stt.vad import SilenceDetector
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +28,18 @@ class OpenAiRealtimeConfigError(RuntimeError):
 
 class OpenAiRealtimeSttProvider:
     """OpenAI Realtime API(WebSocket)にPCM16音声を転送し、
-    サーバー側VAD(turn_detection)による確定/未確定transcriptイベントを中継する。"""
+    共通の音量VADで音声を確定し、transcriptイベントを中継する。"""
 
-    def __init__(self) -> None:
+    def __init__(self, vad_threshold_dbfs: float = -45.0) -> None:
         if not settings.openai_api_key:
             raise OpenAiRealtimeConfigError(
                 "OPENAI_API_KEY が未設定です。OpenAI Realtime STTを使うには環境変数を設定してください。"
             )
         self._last_sample: int = 0
+        self.vad_threshold_dbfs = vad_threshold_dbfs
+        self._pending_commits = 0
+        self._all_completed = asyncio.Event()
+        self._all_completed.set()
 
     async def stream_transcribe(
         self, audio_chunks: AsyncIterator[bytes]
@@ -52,6 +58,7 @@ class OpenAiRealtimeSttProvider:
             try:
                 async for event in self._receive_events(ws):
                     yield event
+                await sender_task
             finally:
                 sender_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -66,26 +73,49 @@ class OpenAiRealtimeSttProvider:
                     "input": {
                         "format": {"type": "audio/pcm", "rate": _OPENAI_INPUT_SAMPLE_RATE},
                         "transcription": {"model": settings.openai_realtime_model},
-                        # 無音のみで区切るserver_vadは会議音声(複数話者・雑音)で発話途中に
-                        # 区切ってしまい欠落や誤変換を招きやすいため、意味的な完結を待つ
-                        # semantic_vadを使う(会議のような自然な発話に対して頑健)。
-                        "turn_detection": {"type": "semantic_vad", "eagerness": "low"},
+                        # 共通の音量VADでinput_audio_buffer.commitを送る。
+                        "turn_detection": None,
                     }
                 },
             },
         }
 
     async def _send_audio(self, ws, audio_chunks: AsyncIterator[bytes]) -> None:
+        detector = SilenceDetector(settings.audio_sample_rate, self.vad_threshold_dbfs)
+        sent_seconds = 0.0
+
+        async def append(chunk: bytes):
+            await ws.send(json.dumps({
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(self._resample_to_openai_rate(chunk)).decode("ascii"),
+            }))
+
+        async def commit():
+            # OpenAIは100ms未満のバッファを確定できないため、最後の短い発話を無音で補う。
+            if sent_seconds < 0.1:
+                await append(bytes(2 * math.ceil((0.1 - sent_seconds) * settings.audio_sample_rate)))
+            self._pending_commits += 1
+            self._all_completed.clear()
+            await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+
         try:
             async for chunk in audio_chunks:
-                resampled = self._resample_to_openai_rate(chunk)
-                payload = {
-                    "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(resampled).decode("ascii"),
-                }
-                await ws.send(json.dumps(payload))
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("OpenAI Realtime connection closed while sending audio")
+                boundary = detector.push(chunk)
+                if not detector.has_speech:
+                    detector.reset()
+                    continue
+                await append(chunk)
+                sent_seconds += len(chunk) // 2 / settings.audio_sample_rate
+                if boundary or sent_seconds >= 30.0:
+                    await commit()
+                    detector.reset()
+                    sent_seconds = 0.0
+            if sent_seconds:
+                await commit()
+            # 終了時も最後の確定結果を受信してからWebSocketを閉じる。
+            await asyncio.wait_for(self._all_completed.wait(), timeout=10.0)
+        finally:
+            await ws.close()
 
     def _resample_to_openai_rate(self, chunk: bytes) -> bytes:
         """16kHz PCM16LEチャンクを24kHzに線形補間でアップサンプルする。
@@ -114,39 +144,30 @@ class OpenAiRealtimeSttProvider:
         return out.tobytes()
 
     async def _receive_events(self, ws) -> AsyncIterator[TranscriptEvent]:
-        segment_start_ts = time.monotonic()
-        current_segment_id = str(uuid.uuid4())
-        accumulated_text = ""
-
+        # 複数の確定音声は非同期に完了するためitem_idごとに文字起こしを保持する。
+        items: dict[str, tuple[str, float, str]] = {}
         async for raw_message in ws:
             message = json.loads(raw_message)
             msg_type = message.get("type")
-
-            if msg_type == "conversation.item.input_audio_transcription.delta":
-                delta = message.get("delta", "")
-                if delta:
-                    accumulated_text += delta
+            if msg_type in (
+                "conversation.item.input_audio_transcription.delta",
+                "conversation.item.input_audio_transcription.completed",
+            ):
+                item_id = message["item_id"]
+                segment_id, start_ts, text = items.get(item_id, (str(uuid.uuid4()), time.monotonic(), ""))
+                final = msg_type.endswith(".completed")
+                text = message.get("transcript", "") if final else text + message.get("delta", "")
+                if final:
+                    items.pop(item_id, None)
+                    self._pending_commits = max(0, self._pending_commits - 1)
+                    if not self._pending_commits:
+                        self._all_completed.set()
+                else:
+                    items[item_id] = (segment_id, start_ts, text)
+                if text:
                     yield TranscriptEvent(
-                        segment_id=current_segment_id,
-                        audio_source="microphone",
-                        text=accumulated_text,
-                        is_final=False,
-                        start_ts=segment_start_ts,
-                        end_ts=time.monotonic(),
+                        segment_id=segment_id, audio_source="microphone", text=text,
+                        is_final=final, start_ts=start_ts, end_ts=time.monotonic(),
                     )
-            elif msg_type == "conversation.item.input_audio_transcription.completed":
-                transcript = message.get("transcript", "")
-                if transcript:
-                    yield TranscriptEvent(
-                        segment_id=current_segment_id,
-                        audio_source="microphone",
-                        text=transcript,
-                        is_final=True,
-                        start_ts=segment_start_ts,
-                        end_ts=time.monotonic(),
-                    )
-                current_segment_id = str(uuid.uuid4())
-                segment_start_ts = time.monotonic()
-                accumulated_text = ""
-            elif msg_type == "error":
-                logger.error("OpenAI Realtime error: %s", message.get("error"))
+            elif msg_type == "error" or msg_type == "conversation.item.input_audio_transcription.failed":
+                raise RuntimeError(f"OpenAI Realtime transcription failed: {message.get('error')}")

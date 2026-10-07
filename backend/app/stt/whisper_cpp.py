@@ -127,13 +127,12 @@ async def _run_whisper_cli(binary: Path, model_path: Path, wav_path: Path) -> st
 class WhisperCppSttProvider:
     """whisper.cpp(Vulkanビルド等)の whisper-cli をVAD区切りごとにsubprocess実行するローカルSTT実装。"""
 
-    def __init__(self) -> None:
+    def __init__(self, vad_threshold_dbfs: float = -45.0) -> None:
         self._binary = _resolve_binary()
         self._model_path = _resolve_model_path()
         self._segmenter = SilenceSegmenter(
             sample_rate=settings.audio_sample_rate,
-            energy_threshold=settings.vad_energy_threshold,
-            silence_threshold_ms=settings.vad_silence_threshold_ms,
+            threshold_dbfs=vad_threshold_dbfs,
         )
 
     async def stream_transcribe(

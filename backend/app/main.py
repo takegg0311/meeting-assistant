@@ -58,6 +58,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             stt_provider_name=start_msg.stt_provider,
                             audio_source=start_msg.audio_source,
                             audio_sources=start_msg.audio_sources,
+                            vad_threshold_dbfs=start_msg.vad_threshold_dbfs,
                         )
                     except Exception as exc:
                         logger.exception("Failed to start STT provider: %s", start_msg.stt_provider)

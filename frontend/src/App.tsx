@@ -25,6 +25,7 @@ type SessionState = "idle" | "starting" | "active" | "stopping";
 function App() {
   const [audioSource, setAudioSource] = useState<AudioSourceMode>("microphone");
   const [sttProvider, setSttProvider] = useState<SttProviderName>("mock");
+  const [vadThreshold, setVadThreshold] = useState(-45);
   const [sessionState, setSessionState] = useState<SessionState>("idle");
   const [segments, setSegments] = useState<TranscriptEvent[]>([]);
   const [suggestions, setSuggestions] = useState<AnswerSuggestionEvent[]>([]);
@@ -125,6 +126,7 @@ function App() {
         audio_source: providers[0].sourceType,
         ...(audioSource === "meeting" ? { audio_sources: providers.map((p) => p.sourceType) } : {}),
         features: [],
+        vad_threshold_dbfs: vadThreshold,
       });
       sending = true;
       socketRef.current = socket;
@@ -181,6 +183,17 @@ function App() {
         )}
       </section>
 
+      <section className="controls" aria-label="STT共通の無音判定">
+        <label htmlFor="vad-threshold">無音判定の音量：{vadThreshold} dBFS</label>
+        <input id="vad-threshold" type="range" min={-70} max={-15} step={1}
+          value={vadThreshold} disabled={sessionState !== "idle"}
+          onChange={(event) => setVadThreshold(Number(event.target.value))} />
+        <span className="answer-request-hint">
+          この音量以下が0.8秒続くと発話を区切ります（各入力を個別に判定）。
+          右ほど無音と判定しやすくなります。変更は開始前に行えます。
+        </span>
+      </section>
+
       <section className="controls">
         <button
           type="button"
@@ -200,6 +213,7 @@ function App() {
           {inputStatus.map((input) => (
             <label key={input.label}>
               {input.label} <meter min={0} max={0.2} value={input.level} aria-label={`${input.label}の音量`} />
+              {` ${input.level > 0 ? (20 * Math.log10(input.level)).toFixed(0) : "−∞"} dBFS`}
               {input.chunks === 0 ? " 音声データ待ち" : ` 送信中（${input.chunks}チャンク）`}
             </label>
           ))}

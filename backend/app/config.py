@@ -59,10 +59,6 @@ class Settings(BaseSettings):
     whisper_cpp_gpu_device: int = 0
     whisper_cpp_threads: int = 0
 
-    # --- VAD (whisper.cpp区切り検出用) ---
-    vad_silence_threshold_ms: int = 700
-    vad_energy_threshold: float = 0.01
-
     @property
     def cors_origins(self) -> list[str]:
         """CORS許可オリジン。CORS_ORIGIN未設定時は FRONTEND_PORT から組み立てる。"""

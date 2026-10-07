@@ -21,13 +21,17 @@ class MeetingSession:
     def __init__(
         self, websocket: WebSocket, stt_provider_name: str, audio_source: AudioSource,
         audio_sources: list[AudioSource] | None = None,
+        vad_threshold_dbfs: float = -45.0,
     ):
         self._websocket = websocket
         self._audio_sources = audio_sources or [audio_source]
         if len(set(self._audio_sources)) != len(self._audio_sources):
             raise ValueError("Duplicate audio sources")
         self._framed_audio = audio_sources is not None
-        self._providers = {source: get_stt_provider(stt_provider_name) for source in self._audio_sources}
+        self._providers = {
+            source: get_stt_provider(stt_provider_name, vad_threshold_dbfs=vad_threshold_dbfs)
+            for source in self._audio_sources
+        }
         self._queues: dict[AudioSource, asyncio.Queue] = {source: asyncio.Queue() for source in self._audio_sources}
         self._stt_tasks: list[asyncio.Task] = []
 

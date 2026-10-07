@@ -8,6 +8,7 @@ export interface StartSessionMessage {
   audio_source: AudioSource;
   audio_sources?: AudioSource[];
   features: string[];
+  vad_threshold_dbfs?: number;
 }
 
 export interface StopSessionMessage {
