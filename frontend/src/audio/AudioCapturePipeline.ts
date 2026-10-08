@@ -13,9 +13,16 @@ export class AudioCapturePipeline {
   }
 
   async start(provider: AudioSourceProvider): Promise<void> {
-    const stream = await provider.start();
-
-    this.audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+    // 許可ダイアログの待機より前に、クリックの中でAudioContextを起動する。
+    const context = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+    this.audioContext = context;
+    const running = context.resume();
+    // 許可待ちの間にresumeが失敗しても未処理のPromiseにしない。
+    const startup = await Promise.allSettled([provider.start(), running]);
+    const failure = startup.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+    const stream = (startup[0] as PromiseFulfilledResult<MediaStream>).value;
+    if (context.state !== "running") throw new Error("音声処理を開始できませんでした。もう一度セッションを開始してください。");
     await this.audioContext.audioWorklet.addModule("/pcm-worklet.js");
 
     this.sourceNode = this.audioContext.createMediaStreamSource(stream);

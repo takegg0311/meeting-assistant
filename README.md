@@ -4,8 +4,8 @@
 
 設計の詳細は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) を参照。
 
-> **現状: Phase 1(MVP)実装中**
-> 音声入力・WebSocketストリーミング・ライブ文字起こし表示、およびSTTプロバイダ(クラウド: OpenAI Realtime / Google Cloud、ローカル: whisper.cpp Vulkan)を実装済み。Phase 2以降(回答提案・ファクトチェック等)は未着手。
+> **現状: Phase 2 実装中**
+> 音声入力・WebSocketストリーミング・ライブ文字起こし表示、STTプロバイダ(クラウド: OpenAI Realtime / Google Cloud、ローカル: whisper.cpp Vulkan)、および回答提案(UI操作トリガー、LLMプロバイダはmock / Claude API)を実装済み。Phase 2.5以降(自動質問検出・ファクトチェック等)は未着手。
 
 ## 1. 全体像
 
@@ -67,7 +67,7 @@ meeting-assistant/
 - Python 3.11+ / [uv](https://docs.astral.sh/uv/)(バックエンドの依存管理・仮想環境に使用)
 - Node.js 20+
 - PostgreSQL 15+(Phase 6以降で使用。Phase 1時点では未使用)
-- Claude API キー(ファクトチェック・回答提案・議事録生成用、Phase 2以降)
+- Claude API キー(回答提案・ファクトチェック・議事録生成用。`LLM_PROVIDER=mock` なら不要)
 - 使用するSTTプロバイダに応じた準備(下記「STTプロバイダの設定」参照)
 
 ### 環境変数
@@ -98,6 +98,12 @@ uv run python -m app.main
 
 ```bash
 uv run uvicorn app.main:app --reload --port "$BACKEND_PORT"
+```
+
+テストは `pytest` で実行する。
+
+```bash
+cd backend && uv run pytest
 ```
 
 ### フロントエンド(React)
@@ -159,6 +165,22 @@ Vite開発サーバーは `strictPort: true` で起動するため、`FRONTEND_P
 
 AMD Vulkan環境では`WHISPER_CPP_FLASH_ATTN=false`(既定)・`WHISPER_CPP_BEAM_SIZE=5`を推奨する(flash attention有効時や大きなbeam_sizeでは不安定になる報告がある)。
 
+### 回答提案の設定
+
+会議中に「今の問いへの回答案が欲しい」と思ったタイミングで**画面の「回答提案」ボタンを押す**と、直近の会話から回答案が生成されて表示される。LLMによる自動質問検出は行わない(理由は [docs/ARCHITECTURE.md 4.4](docs/ARCHITECTURE.md) を参照)。
+
+| LLM_PROVIDER | 用途 | 必要な設定 |
+|---|---|---|
+| `mock` (既定) | APIキー不要のダミー実装。配線・UIの動作確認用 | なし |
+| `cloud_anthropic` | Claude APIで実際に生成 | `ANTHROPIC_API_KEY` |
+
+主な調整項目(既定値は`.env.sample`を参照):
+
+- `ANSWER_SUGGESTION_GRACE_MS`: ボタン押下後、確定セグメントの到着を待つ猶予時間。押下時点では質問の末尾がまだSTT未確定な可能性が高いため待つ。猶予内に確定すれば即座に生成へ進む。体感を速くしたい場合は下げる
+- `ANSWER_SUGGESTION_QUESTION_SEGMENTS` / `ANSWER_SUGGESTION_CONTEXT_SEGMENTS`: 質問候補として渡す直近セグメント数と、その前に文脈として渡すセグメント数
+- `ANSWER_SUGGESTION_MAX_CONCURRENCY`: 同時に走らせる生成の上限(連打時の保護)。ボタンは連打でき、結果はカードとして積まれる
+- `ANTHROPIC_ANSWER_MODEL`: 2〜3秒の目標レイテンシに合わせ、既定は軽量モデル(Haiku)
+
 ## 5. 実装ロードマップ
 
 1. **Phase 1(MVP)**: 音声入力ソース切替(マイク/PC音声)・WebSocketストリーミング・STT抽象化・ライブ文字起こし表示
@@ -177,3 +199,28 @@ AMD Vulkan環境では`WHISPER_CPP_FLASH_ATTN=false`(既定)・`WHISPER_CPP_BEAM
 - PC音声(タブ/システム)取得はChrome/Edgeでのみ安定動作し、Firefox/Safariは非対応(マイクのみへフォールバック)。
 - 音声・transcriptの保存範囲はプライバシー要件に応じて設定する。
 - `local_whispercpp`はVADによる発話区切りごとにサブプロセスを起動するため、クラウド勢(OpenAI Realtime / Google StreamingRecognize)と比べて確定テキストが返るまでの遅延が大きい。社外秘の会議などプライバシー要件がある場合の選択肢として位置づける。
+
+## Webミーティングで自分と相手を記録する
+
+音声ソースで「タブ / システム音声 ＋ マイク」を選び、セッションを開始する。共有ダイアログでは会議のタブ / 画面を選んで音声共有を有効にし、マイクの使用も許可する。双方の音声を別々に文字起こしし、マイク由来は「自分」、共有音声由来は「相手」と表示する。回答提案にもこの区別が渡される。相手が複数人いる場合の個人識別は行わない。
+
+スピーカーからの相手の声をマイクでも拾うと重複する場合があるため、ヘッドセットでの利用を推奨する。システム音声には会議以外の再生音も含まれる。クラウドSTTは入力元ごとに接続するため、同時入力時は2系統分の利用となる。
+
+同時入力のWebSocketプロトコル: `start_session.audio_sources` の配列順を入力番号とし、PCMバイナリの先頭1バイトに入力番号を付ける。残りは従来と同じ16kHz PCM。`audio_sources` を省略した単一入力は従来どおりヘッダーなし。
+
+入力音量メーターと送信チャンク数で、入力元ごとの取得状況を確認できる。YouTubeで確認する場合は「タブ / システム音声 ＋ マイク」を選択し、YouTubeタブの音声共有を有効にする。動画再生で「共有音声（相手）」、自分の発話で「マイク（自分）」のメーターが動くことを確認する。チャンク数だけ増えてメーターが動かない場合は無音入力、両方が動いて文字起こしが出ない場合はSTT側を確認する。Google Cloudの失敗は入力元とエラー内容を画面に表示する。
+
+音声取得の回帰テストは `cd frontend && npm test`（Node.js 22.6以上）で実行できる。ブラウザ権限・実機マイク・Google Cloud接続の通し確認は別途必要。
+
+### 全STT共通の無音判定（VAD）
+
+Google Cloud、OpenAI Realtime、whisper.cpp、Mockは、共通のPCM16LEのRMS音量判定を使います。マイク／タブ・システム音声は個別に判定し、発話後にしきい値以下の音量が0.8秒続くと区切ります。無音時間は受信処理の速度によらず音声のサンプル数から計算します。
+
+画面の「無音判定の音量」スライダーで、セッション開始前に全入力共通のしきい値を調整できます（初期値 −45 dBFS、範囲 −70〜−15 dBFS）。右へ動かすほど無音と判定しやすくなります。セッション中は入力メーター横の実測dBFSを参考に、次回開始時の値を調整してください。音量に基づく簡易VADなので、声と環境音は識別しません。
+
+- Google Cloud：無音で接続を更新します。頻繁な再接続を避けるため無音による更新は接続あたり10秒以上の音声を送った後に行います。約5分の上限を避けるため4分で強制更新します。旧接続の応答を読み終えてから新接続を開き、その間の入力はキューで保持します。
+- OpenAI Realtime：サーバー側VADを無効にし、共通VADの区切りで音声バッファをcommitします。接続は維持します。認識結果は音声の確定後に届きます。終了時の残り音声も確定して結果を待ちます。
+- whisper.cpp：共通VADで区切った発話ごとにCLIで認識します。終了時の残り音声も処理します。
+- Mock：共通VADの区切りごとにダミーの文字起こしを返します。無音だけの入力では返しません。
+
+OpenAI、whisper.cpp、Mockでは長い発話を30秒で区切ります。しきい値を上げすぎると小さな声の途中で区切られる場合があり、時間による強制区切りも境界付近の認識精度に影響する可能性があります。

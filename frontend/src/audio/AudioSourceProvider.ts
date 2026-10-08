@@ -32,10 +32,14 @@ export class DisplayAudioSource implements AudioSourceProvider {
       video: true, // 仕様上、音声のみの取得はできないため必須
       audio: { systemAudio: "include" } as MediaTrackConstraints,
     });
+    const displaySurface = stream.getVideoTracks()[0]?.getSettings().displaySurface;
     stream.getVideoTracks().forEach((track) => track.stop()); // 映像は即座に破棄し音声のみ使用
 
     const [audioTrack] = stream.getAudioTracks();
-    const displaySurface = (audioTrack?.getSettings() as { displaySurface?: string })?.displaySurface;
+    if (!audioTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error("共有するタブ / 画面の音声を有効にしてください。");
+    }
     this.sourceType = displaySurface === "browser" ? "tab_audio" : "system_audio";
 
     this.stream = stream;
